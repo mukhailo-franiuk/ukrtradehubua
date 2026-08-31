@@ -1,0 +1,126 @@
+src/
+│
+├── app/
+│   │
+│   ├── (marketplace)/
+│   │   ├── layout.tsx
+│   │   ├── page.tsx
+│   │   │
+│   │   ├── products/
+│   │   │   ├── page.tsx
+│   │   │   └── [slug]/
+│   │   │       └── page.tsx
+│   │   │
+│   │   ├── categories/
+│   │   │   ├── page.tsx
+│   │   │   └── [slug]/
+│   │   │       └── page.tsx
+│   │   │
+│   │   ├── shops/
+│   │   │   ├── page.tsx
+│   │   │   └── [slug]/
+│   │   │       └── page.tsx
+│   │   │
+│   │   ├── deals/
+│   │   ├── new/
+│   │   ├── popular/
+│   │   ├── promotions/
+│   │   ├── search/
+│   │   ├── cart/
+│   │   ├── checkout/
+│   │   └── sell/
+│   │
+│   ├── account/
+│   │   ├── page.tsx
+│   │   ├── orders/
+│   │   ├── wishlist/
+│   │   ├── favorites/
+│   │   ├── reviews/
+│   │   ├── addresses/
+│   │   ├── notifications/
+│   │   └── settings/
+│   │
+│   ├── seller/
+│   │   ├── page.tsx
+│   │   ├── products/
+│   │   ├── orders/
+│   │   ├── customers/
+│   │   ├── analytics/
+│   │   ├── promotions/
+│   │   ├── shop/
+│   │   ├── payouts/
+│   │   └── settings/
+│   │
+│   ├── admin/
+│   │   ├── page.tsx
+│   │   ├── users/
+│   │   ├── sellers/
+│   │   ├── products/
+│   │   ├── categories/
+│   │   ├── orders/
+│   │   ├── payments/
+│   │   ├── payouts/
+│   │   ├── promotions/
+│   │   ├── reviews/
+│   │   ├── reports/
+│   │   ├── analytics/
+│   │   ├── moderation/
+│   │   └── settings/
+│   │
+│   └── api/
+│       ├── auth/
+│       ├── products/
+│       ├── categories/
+│       ├── shops/
+│       ├── cart/
+│       ├── checkout/
+│       ├── orders/
+│       ├── payments/
+│       ├── delivery/
+│       ├── reviews/
+│       ├── notifications/
+│       ├── seller/
+│       └── admin/
+│
+├── components/
+│   ├── layout/
+│   ├── header/
+│   ├── footer/
+│   ├── product/
+│   ├── catalog/
+│   ├── cart/
+│   ├── checkout/
+│   ├── account/
+│   ├── seller/
+│   ├── admin/
+│   └── ui/
+│
+├── lib/
+│   ├── prisma.ts
+│   ├── auth.ts
+│   ├── permissions.ts
+│   ├── validation.ts
+│   ├── pricing.ts
+│   ├── orders.ts
+│   ├── payments.ts
+│   ├── delivery.ts
+│   ├── search.ts
+│   └── analytics.ts
+│
+└── types/
+    ├── user.ts
+    ├── product.ts
+    ├── order.ts
+    └── seller.ts
+
+
+
+
+    addresses/route.ts
+addresses/[id]/route.ts
+shops/route.ts
+shops/[id]/route.ts
+shops/[id]/follow/route.ts
+shops/[id]/reviews/route.ts
+seller/application/route.ts
+seller/shop/route.ts

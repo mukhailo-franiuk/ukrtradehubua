@@ -1,0 +1,7 @@
+src/
+    app/
+        (marketplace)/
+            deals/
+        api/
+    components/
+    lib/
