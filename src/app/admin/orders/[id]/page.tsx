@@ -1,1446 +1,1209 @@
-import type { Metadata } from "next";
-import Link from "next/link";
-import { notFound } from "next/navigation";
+"use client";
 
 import {
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
+import Link from "next/link";
+import {
+  AlertCircle,
   ArrowLeft,
   CheckCircle2,
   Clock3,
   CreditCard,
-  ExternalLink,
-  FileText,
+  Loader2,
   MapPin,
   Package,
-  Phone,
-  ReceiptText,
-  ShoppingBag,
+  RefreshCw,
   Store,
   Truck,
   User,
   XCircle,
 } from "lucide-react";
 
-import { db } from "@/lib/prisma";
-
-type OrderPageProps = {
-  params: Promise<{
-    id: string;
-  }>;
+type Payment = {
+  id: string;
+  amount: string | number;
+  method: string;
+  status: string;
+  provider: string | null;
+  transactionId: string | null;
+  paidAt: string | null;
+  createdAt: string;
+  updatedAt?: string;
 };
 
-export async function generateMetadata({
-  params,
-}: OrderPageProps): Promise<Metadata> {
-  const { id } = await params;
+type OrderItem = {
+  id: string;
+  productTitle: string;
+  sku: string | null;
+  quantity: number;
+  unitPrice: string | number;
+  totalPrice: string | number;
 
-  const order = await db.order.findUnique({
-    where: {
-      id,
-    },
-    select: {
-      orderNumber: true,
-    },
-  });
-
-  if (!order) {
-    return {
-      title: "Замовлення не знайдено | UkrTradeHub Admin",
-      robots: {
-        index: false,
-        follow: false,
-      },
-    };
-  }
-
-  return {
-    title: `Замовлення #${order.orderNumber} | UkrTradeHub Admin`,
-    robots: {
-      index: false,
-      follow: false,
-    },
+  product: {
+    id: string;
+    title: string;
+    slug: string;
+    sku: string | null;
+    price: string | number;
+    stock: number;
+    reservedStock: number;
+    status: string;
   };
-}
 
-function formatDate(date: Date | null | undefined) {
-  if (!date) {
-    return "—";
-  }
+  variant: {
+    id: string;
+    title: string;
+    sku?: string | null;
+    price?: string | number | null;
+    stock: number;
+    reservedStock: number;
+    isActive?: boolean;
+  } | null;
 
-  return new Intl.DateTimeFormat("uk-UA", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
-}
+  shop: {
+    id: string;
+    name: string;
+    slug: string;
+    sellerStatus: string;
+    isActive: boolean;
+  };
+};
 
-function formatMoney(value: unknown) {
+type SellerOrder = {
+  id: string;
+  shopId: string;
+  subtotal: string | number;
+  shipping: string | number;
+  total: string | number;
+  commissionRate?: string | number;
+  commissionAmount?: string | number;
+  sellerAmount?: string | number;
+  status: string;
+
+  shop: {
+    id: string;
+    userId?: string;
+    name: string;
+    slug: string;
+    description?: string | null;
+    shortDescription?: string | null;
+    sellerStatus?: string;
+    isActive?: boolean;
+    rating?: string | number;
+    productsCount?: number;
+    salesCount?: number;
+    ordersCount?: number;
+    phone?: string | null;
+    email?: string | null;
+    website?: string | null;
+  };
+};
+
+type Address = {
+  id: string;
+  type: string;
+  title: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
+  country: string;
+  region: string | null;
+  city: string | null;
+  postalCode: string | null;
+  street: string | null;
+  building: string | null;
+  apartment: string | null;
+  novaPoshtaWarehouse: string | null;
+  novaPoshtaRef: string | null;
+};
+
+type Order = {
+  id: string;
+  userId: string;
+  orderNumber: string;
+  status: string;
+
+  subtotal: string | number;
+  discountAmount: string | number;
+  deliveryAmount: string | number;
+  total: string | number;
+
+  customerNote: string | null;
+  shippingAddressId: string | null;
+  shippingMethod: string | null;
+
+  createdAt: string;
+  updatedAt: string;
+
+  user: {
+    id: string;
+    name: string | null;
+    email: string;
+    phone: string | null;
+    role: string;
+    status: string;
+    isBlocked: boolean;
+  };
+
+  shippingAddress: Address | null;
+
+  items: OrderItem[];
+
+  sellers: SellerOrder[];
+
+  payments: Payment[];
+
+  delivery?: unknown | null;
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  PENDING: "Очікує підтвердження",
+  CONFIRMED: "Підтверджено",
+  PROCESSING: "В обробці",
+  SHIPPED: "Відправлено",
+  DELIVERED: "Доставлено",
+  COMPLETED: "Завершено",
+  CANCELLED: "Скасовано",
+  RETURNED: "Повернено",
+  REFUNDED: "Кошти повернено",
+};
+
+const PAYMENT_STATUS_LABELS: Record<string, string> = {
+  PENDING: "Очікує",
+  PROCESSING: "Обробляється",
+  PAID: "Оплачено",
+  FAILED: "Помилка",
+  REFUNDED: "Повернено",
+  PARTIALLY_REFUNDED: "Частково повернено",
+  CANCELLED: "Скасовано",
+};
+
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  CARD: "Банківська картка",
+  CASH_ON_DELIVERY: "Післяплата",
+  BANK_TRANSFER: "Банківський переказ",
+  APPLE_PAY: "Apple Pay",
+  GOOGLE_PAY: "Google Pay",
+};
+
+const SHIPPING_LABELS: Record<string, string> = {
+  NOVA_POSHTA: "Нова пошта",
+  UKRPOSHTA: "Укрпошта",
+  MIST: "Meest",
+  COURIER: "Кур'єр",
+  PICKUP: "Самовивіз",
+};
+
+function money(value: string | number) {
   return `${Number(value).toLocaleString("uk-UA", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })} ₴`;
 }
 
-function orderStatusLabel(status: string) {
-  switch (status) {
-    case "PENDING":
-      return "Очікує";
-
-    case "CONFIRMED":
-      return "Підтверджене";
-
-    case "PAID":
-      return "Оплачене";
-
-    case "PROCESSING":
-      return "В обробці";
-
-    case "SHIPPED":
-      return "Відправлене";
-
-    case "DELIVERED":
-      return "Доставлене";
-
-    case "CANCELLED":
-      return "Скасоване";
-
-    case "REFUNDED":
-      return "Повернене";
-
-    default:
-      return status;
-  }
-}
-
-function orderStatusStyle(status: string) {
-  switch (status) {
-    case "PENDING":
-      return "border-amber-400/20 bg-amber-400/10 text-amber-300";
-
-    case "CONFIRMED":
-      return "border-blue-400/20 bg-blue-400/10 text-blue-300";
-
-    case "PAID":
-      return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
-
-    case "PROCESSING":
-      return "border-violet-400/20 bg-violet-400/10 text-violet-300";
-
-    case "SHIPPED":
-      return "border-cyan-400/20 bg-cyan-400/10 text-cyan-300";
-
-    case "DELIVERED":
-      return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
-
-    case "CANCELLED":
-      return "border-red-400/20 bg-red-400/10 text-red-300";
-
-    case "REFUNDED":
-      return "border-orange-400/20 bg-orange-400/10 text-orange-300";
-
-    default:
-      return "border-zinc-400/10 bg-zinc-400/5 text-zinc-400";
-  }
-}
-
-function paymentStatusLabel(status: string) {
-  switch (status) {
-    case "PENDING":
-      return "Очікує оплати";
-
-    case "PAID":
-      return "Оплачено";
-
-    case "FAILED":
-      return "Помилка оплати";
-
-    case "REFUNDED":
-      return "Повернено";
-
-    case "PARTIAL_REFUND":
-      return "Часткове повернення";
-
-    default:
-      return status;
-  }
-}
-
-function paymentStatusStyle(status: string) {
-  switch (status) {
-    case "PAID":
-      return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
-
-    case "PENDING":
-      return "border-amber-400/20 bg-amber-400/10 text-amber-300";
-
-    case "FAILED":
-      return "border-red-400/20 bg-red-400/10 text-red-300";
-
-    case "REFUNDED":
-    case "PARTIAL_REFUND":
-      return "border-violet-400/20 bg-violet-400/10 text-violet-300";
-
-    default:
-      return "border-zinc-400/10 bg-zinc-400/5 text-zinc-400";
-  }
-}
-
-function paymentMethodLabel(method: string) {
-  switch (method) {
-    case "CASH":
-      return "Готівка";
-
-    case "CARD":
-      return "Картка";
-
-    case "ONLINE":
-      return "Онлайн-оплата";
-
-    case "COD":
-      return "Післяплата";
-
-    default:
-      return method;
-  }
-}
-
-function deliveryMethodLabel(method: string | null | undefined) {
-  switch (method) {
-    case "NOVA_POSHTA":
-      return "Нова пошта";
-
-    case "UKRPOSHTA":
-      return "Укрпошта";
-
-    case "MIST":
-      return "Meest";
-
-    case "COURIER":
-      return "Кур'єр";
-
-    case "PICKUP":
-      return "Самовивіз";
-
-    default:
-      return method || "Не вказано";
-  }
-}
-
-function deliveryStatusLabel(status: string) {
-  switch (status) {
-    case "PENDING":
-      return "Очікує";
-
-    case "PROCESSING":
-      return "В обробці";
-
-    case "SHIPPED":
-      return "Відправлено";
-
-    case "IN_TRANSIT":
-      return "У дорозі";
-
-    case "DELIVERED":
-      return "Доставлено";
-
-    case "RETURNED":
-      return "Повернено";
-
-    default:
-      return status;
-  }
-}
-
-function deliveryStatusStyle(status: string) {
-  switch (status) {
-    case "PENDING":
-      return "border-amber-400/20 bg-amber-400/10 text-amber-300";
-
-    case "PROCESSING":
-      return "border-violet-400/20 bg-violet-400/10 text-violet-300";
-
-    case "SHIPPED":
-    case "IN_TRANSIT":
-      return "border-cyan-400/20 bg-cyan-400/10 text-cyan-300";
-
-    case "DELIVERED":
-      return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
-
-    case "RETURNED":
-      return "border-orange-400/20 bg-orange-400/10 text-orange-300";
-
-    default:
-      return "border-zinc-400/10 bg-zinc-400/5 text-zinc-400";
-  }
-}
-
-function initials(
-  name: string | null,
-  email: string
-) {
-  const source = name?.trim() || email.trim();
-
-  return source.charAt(0).toUpperCase();
-}
-
-export default async function AdminOrderPage({
-  params,
-}: OrderPageProps) {
-  const { id } = await params;
-
-  const order = await db.order.findUnique({
-    where: {
-      id,
-    },
-
-    include: {
-      user: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          phone: true,
-          role: true,
-          status: true,
-          isBlocked: true,
-          createdAt: true,
-        },
-      },
-
-      shippingAddress: true,
-
-      items: {
-        orderBy: {
-          createdAt: "asc",
-        },
-
-        include: {
-          product: {
-            select: {
-              id: true,
-              title: true,
-              slug: true,
-              price: true,
-              status: true,
-            },
-          },
-
-          variant: {
-            select: {
-              id: true,
-              name: true,
-              sku: true,
-            },
-          },
-
-          shop: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-              sellerStatus: true,
-            },
-          },
-        },
-      },
-
-      sellers: {
-        orderBy: {
-          createdAt: "asc",
-        },
-
-        include: {
-          shop: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-              sellerStatus: true,
-              isActive: true,
-            },
-          },
-        },
-      },
-
-      payments: {
-        orderBy: {
-          createdAt: "desc",
-        },
-      },
-
-      delivery: true,
-
-      returnRequests: {
-        orderBy: {
-          createdAt: "desc",
-        },
-      },
-
-      couponUsages: {
-        include: {
-          coupon: {
-            select: {
-              id: true,
-              code: true,
-              type: true,
-              value: true,
-            },
-          },
-        },
-      },
-    },
+function dateTime(value: string) {
+  return new Date(value).toLocaleString("uk-UA", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
+}
 
-  if (!order) {
-    notFound();
-  }
+function StatusBadge({
+  status,
+}: {
+  status: string;
+}) {
+  const good =
+    status === "CONFIRMED" ||
+    status === "COMPLETED";
 
-  const totalItems = order.items.reduce(
-    (sum, item) => sum + item.quantity,
-    0
-  );
-
-  const paidPayment = order.payments.find(
-    (payment) => payment.status === "PAID"
-  );
-
-  const latestPayment = order.payments[0] ?? null;
-
-  const paymentStatus =
-    paidPayment?.status ??
-    latestPayment?.status ??
-    "PENDING";
-
-  const customerInitial = initials(
-    order.user.name,
-    order.user.email
-  );
-
-  const address = order.shippingAddress;
-
-  const recipientName =
-    `${address?.firstName ?? ""} ${address?.lastName ?? ""}`.trim();
+  const bad =
+    status === "CANCELLED" ||
+    status === "REFUNDED";
 
   return (
-    <main className="min-h-full bg-[#070a10] text-white">
-      <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
+    <span
+      className={`inline-flex rounded-full border px-3 py-1.5 text-xs font-medium ${
+        good
+          ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
+          : bad
+            ? "border-red-400/20 bg-red-400/10 text-red-300"
+            : "border-amber-400/20 bg-amber-400/10 text-amber-300"
+      }`}
+    >
+      {STATUS_LABELS[status] ?? status}
+    </span>
+  );
+}
 
-        {/* HEADER */}
+export default function AdminOrderPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const [orderId, setOrderId] =
+    useState<string | null>(null);
 
-        <div className="mb-6">
+  const [order, setOrder] =
+    useState<Order | null>(null);
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [saving, setSaving] =
+    useState(false);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
+  const [success, setSuccess] =
+    useState<string | null>(null);
+
+  const loadOrder = useCallback(
+    async (id: string) => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const response = await fetch(
+          `/api/admin/orders/${id}`,
+          {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store",
+          }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data?.message ??
+              data?.error ??
+              "Не вдалося завантажити замовлення"
+          );
+        }
+
+        /*
+         * API /api/admin/orders/[id]
+         * повертає Order напряму:
+         *
+         * {
+         *   id: "...",
+         *   orderNumber: "...",
+         *   ...
+         * }
+         *
+         * А не:
+         *
+         * {
+         *   order: {...}
+         * }
+         */
+        setOrder(data);
+      } catch (err) {
+        setOrder(null);
+
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Сталася помилка"
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    params
+      .then(({ id }) => {
+        if (cancelled) return;
+
+        setOrderId(id);
+        void loadOrder(id);
+      })
+      .catch(() => {
+        if (cancelled) return;
+
+        setOrderId(null);
+        setOrder(null);
+        setError(
+          "Не вдалося отримати ID замовлення."
+        );
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [params, loadOrder]);
+
+  async function changeStatus(status: string) {
+    if (!orderId || saving) return;
+
+    const label =
+      STATUS_LABELS[status] ?? status;
+
+    const confirmed = window.confirm(
+      `Змінити статус замовлення на «${label}»?`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setSaving(true);
+      setError(null);
+      setSuccess(null);
+
+      const response = await fetch(
+        `/api/admin/orders/${orderId}`,
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            status,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.message ??
+            data?.error ??
+            "Не вдалося змінити статус"
+        );
+      }
+
+      /*
+       * PATCH /api/admin/orders/[id]
+       * також повертає Order напряму.
+       */
+      setOrder(data);
+
+      setSuccess(
+        `Статус змінено на «${label}»`
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Сталася помилка"
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center bg-zinc-950 text-white">
+        <div className="text-center">
+          <Loader2 className="mx-auto h-8 w-8 animate-spin text-amber-400" />
+
+          <p className="mt-3 text-sm text-zinc-500">
+            Завантаження замовлення...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!order) {
+    return (
+      <div className="min-h-[70vh] bg-zinc-950 p-8 text-white">
+        <div className="mx-auto max-w-4xl">
           <Link
             href="/admin/orders"
-            className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-zinc-500 transition hover:text-white"
+            className="inline-flex items-center gap-2 text-sm text-zinc-400 transition hover:text-white"
           >
             <ArrowLeft className="h-4 w-4" />
-            Назад до замовлень
+            До замовлень
           </Link>
 
-          <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex items-center gap-4">
-              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-amber-400 text-black shadow-lg shadow-amber-400/10">
-                <ShoppingBag className="h-7 w-7" />
-              </div>
+          <div className="mt-8 rounded-2xl border border-red-400/20 bg-red-400/10 p-6 text-red-300">
+            {error ?? "Замовлення не знайдено"}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="text-2xl font-black tracking-tight sm:text-3xl">
-                    Замовлення #{order.orderNumber}
-                  </h1>
+  const latestPayment =
+    order.payments[0];
 
-                  <span
-                    className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wide ${orderStatusStyle(
-                      order.status
-                    )}`}
-                  >
-                    {orderStatusLabel(order.status)}
-                  </span>
-                </div>
+  const itemCount =
+    order.items.reduce(
+      (sum, item) =>
+        sum + item.quantity,
+      0
+    );
 
-                <p className="mt-1 text-sm text-zinc-500">
-                  Створено {formatDate(order.createdAt)}
-                </p>
-              </div>
+  return (
+    <div className="min-h-full bg-zinc-950 text-white">
+      <div className="mx-auto max-w-[1500px] space-y-6 p-6 lg:p-8">
+
+        {/* TOP */}
+
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <Link
+              href="/admin/orders"
+              className="mb-4 inline-flex items-center gap-2 text-sm text-zinc-500 transition hover:text-white"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Всі замовлення
+            </Link>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-3xl font-bold">
+                #{order.orderNumber}
+              </h1>
+
+              <StatusBadge
+                status={order.status}
+              />
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <span
-                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold ${paymentStatusStyle(
-                  paymentStatus
-                )}`}
-              >
-                {paymentStatus === "PAID" ? (
-                  <CheckCircle2 className="h-4 w-4" />
-                ) : paymentStatus === "FAILED" ? (
+            <p className="mt-2 text-sm text-zinc-500">
+              Створено{" "}
+              {dateTime(order.createdAt)}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                loadOrder(order.id)
+              }
+              disabled={loading || saving}
+              className="inline-flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 text-sm transition hover:bg-white/[0.08] disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-4 w-4 ${
+                  loading
+                    ? "animate-spin"
+                    : ""
+                }`}
+              />
+              Оновити
+            </button>
+
+            {order.status === "PENDING" && (
+              <>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() =>
+                    changeStatus(
+                      "CONFIRMED"
+                    )
+                  }
+                  className="inline-flex h-10 items-center gap-2 rounded-xl bg-emerald-500 px-4 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:opacity-50"
+                >
+                  {saving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+
+                  Підтвердити
+                </button>
+
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() =>
+                    changeStatus(
+                      "CANCELLED"
+                    )
+                  }
+                  className="inline-flex h-10 items-center gap-2 rounded-xl bg-red-500/10 px-4 text-sm font-semibold text-red-300 ring-1 ring-inset ring-red-400/20 transition hover:bg-red-500/20 disabled:opacity-50"
+                >
                   <XCircle className="h-4 w-4" />
+                  Скасувати
+                </button>
+              </>
+            )}
+
+            {order.status === "CONFIRMED" && (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() =>
+                  changeStatus(
+                    "PROCESSING"
+                  )
+                }
+                className="inline-flex h-10 items-center gap-2 rounded-xl bg-amber-500 px-4 text-sm font-semibold text-white transition hover:bg-amber-400 disabled:opacity-50"
+              >
+                {saving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Clock3 className="h-4 w-4" />
+                  <Package className="h-4 w-4" />
                 )}
 
-                {paymentStatusLabel(paymentStatus)}
+                В обробку
+              </button>
+            )}
+
+            {order.status === "PROCESSING" && (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() =>
+                  changeStatus(
+                    "SHIPPED"
+                  )
+                }
+                className="inline-flex h-10 items-center gap-2 rounded-xl bg-blue-500 px-4 text-sm font-semibold text-white transition hover:bg-blue-400 disabled:opacity-50"
+              >
+                <Truck className="h-4 w-4" />
+                Відправити
+              </button>
+            )}
+
+            {order.status === "SHIPPED" && (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() =>
+                  changeStatus(
+                    "DELIVERED"
+                  )
+                }
+                className="inline-flex h-10 items-center gap-2 rounded-xl bg-indigo-500 px-4 text-sm font-semibold text-white transition hover:bg-indigo-400 disabled:opacity-50"
+              >
+                <Truck className="h-4 w-4" />
+                Доставлено
+              </button>
+            )}
+
+            {order.status === "DELIVERED" && (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() =>
+                  changeStatus(
+                    "COMPLETED"
+                  )
+                }
+                className="inline-flex h-10 items-center gap-2 rounded-xl bg-emerald-500 px-4 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:opacity-50"
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                Завершити
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* MESSAGES */}
+
+        {error && (
+          <div className="flex items-start gap-3 rounded-2xl border border-red-400/20 bg-red-400/10 p-4 text-sm text-red-300">
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+            <div>{error}</div>
+          </div>
+        )}
+
+        {success && (
+          <div className="flex items-start gap-3 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-300">
+            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" />
+            <div>{success}</div>
+          </div>
+        )}
+
+        {/* SUMMARY */}
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <div className="flex items-center gap-3 text-zinc-500">
+              <Package className="h-5 w-5" />
+
+              <span className="text-sm">
+                Товарів
               </span>
+            </div>
+
+            <div className="mt-3 text-2xl font-bold">
+              {itemCount} шт.
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <div className="flex items-center gap-3 text-zinc-500">
+              <CreditCard className="h-5 w-5" />
+
+              <span className="text-sm">
+                Сума
+              </span>
+            </div>
+
+            <div className="mt-3 text-2xl font-bold">
+              {money(order.total)}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <div className="flex items-center gap-3 text-zinc-500">
+              <Clock3 className="h-5 w-5" />
+
+              <span className="text-sm">
+                Оплата
+              </span>
+            </div>
+
+            <div className="mt-3">
+              {latestPayment ? (
+                <>
+                  <div
+                    className={`font-semibold ${
+                      latestPayment.status ===
+                      "PAID"
+                        ? "text-emerald-300"
+                        : latestPayment.status ===
+                            "FAILED"
+                          ? "text-red-300"
+                          : "text-amber-300"
+                    }`}
+                  >
+                    {
+                      PAYMENT_STATUS_LABELS[
+                        latestPayment.status
+                      ] ??
+                        latestPayment.status
+                    }
+                  </div>
+
+                  <div className="mt-1 text-xs text-zinc-600">
+                    {
+                      PAYMENT_METHOD_LABELS[
+                        latestPayment.method
+                      ] ??
+                        latestPayment.method
+                    }
+                  </div>
+                </>
+              ) : (
+                <span className="text-sm text-zinc-600">
+                  Немає платежу
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <div className="flex items-center gap-3 text-zinc-500">
+              <Truck className="h-5 w-5" />
+
+              <span className="text-sm">
+                Доставка
+              </span>
+            </div>
+
+            <div className="mt-3 font-semibold">
+              {order.shippingMethod
+                ? SHIPPING_LABELS[
+                    order.shippingMethod
+                  ] ??
+                  order.shippingMethod
+                : "Не вказано"}
             </div>
           </div>
         </div>
 
-        {/* CONTENT */}
-
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
-
-          {/* MAIN */}
+        <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
 
           <div className="space-y-6">
 
-            {/* ORDER SUMMARY */}
+            {/* ITEMS */}
 
-            <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0b0f16]">
-              <div className="border-b border-white/[0.07] px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <ReceiptText className="h-4 w-4 text-amber-400" />
-
-                  <h2 className="text-sm font-black">
-                    Підсумок замовлення
-                  </h2>
-                </div>
+            <section className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03]">
+              <div className="border-b border-white/10 px-5 py-4">
+                <h2 className="font-semibold">
+                  Товари
+                </h2>
               </div>
 
-              <div className="grid gap-px bg-white/[0.05] sm:grid-cols-2 lg:grid-cols-4">
-                <StatBox
-                  label="Товарів"
-                  value={totalItems.toLocaleString("uk-UA")}
-                  icon={<Package className="h-4 w-4" />}
-                />
+              <div className="divide-y divide-white/[0.06]">
+                {order.items.map(
+                  (item) => (
+                    <div
+                      key={item.id}
+                      className="p-5"
+                    >
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
 
-                <StatBox
-                  label="Підсумок товарів"
-                  value={formatMoney(order.subtotal)}
-                  icon={<ShoppingBag className="h-4 w-4" />}
-                />
+                        <div className="min-w-0">
 
-                <StatBox
-                  label="Доставка"
-                  value={formatMoney(order.deliveryAmount)}
-                  icon={<Truck className="h-4 w-4" />}
-                />
-
-                <StatBox
-                  label="Всього"
-                  value={formatMoney(order.total)}
-                  icon={<ReceiptText className="h-4 w-4" />}
-                  accent
-                />
-              </div>
-            </section>
-
-            {/* PRODUCTS */}
-
-            <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0b0f16]">
-              <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <Package className="h-4 w-4 text-amber-400" />
-
-                  <h2 className="text-sm font-black">
-                    Товари
-                  </h2>
-                </div>
-
-                <span className="text-xs text-zinc-600">
-                  {totalItems} шт.
-                </span>
-              </div>
-
-              <div className="divide-y divide-white/[0.05]">
-                {order.items.map((item) => (
-                  <div
-                    key={item.id}
-                    className="p-5"
-                  >
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-                      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.02]">
-                        <Package className="h-6 w-6 text-zinc-700" />
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Link
-                            href={`/admin/products/${item.productId}`}
-                            className="text-sm font-bold text-white transition hover:text-amber-400"
-                          >
+                          <div className="font-medium text-zinc-100">
                             {item.productTitle}
-                          </Link>
+                          </div>
 
                           {item.variant && (
-                            <span className="rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-0.5 text-[10px] text-zinc-500">
-                              {item.variant.name}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-600">
-                          {item.sku && (
-                            <span>
-                              SKU: {item.sku}
-                            </span>
+                            <div className="mt-1 text-xs text-zinc-500">
+                              Варіант:{" "}
+                              {
+                                item.variant
+                                  .title
+                              }
+                            </div>
                           )}
 
-                          <span>
-                            ID: {item.productId}
-                          </span>
-                        </div>
+                          <div className="mt-1 text-xs text-zinc-600">
+                            SKU:{" "}
+                            {item.sku ??
+                              item.product
+                                .sku ??
+                              "—"}
+                          </div>
 
-                        <div className="mt-3 flex items-center gap-2">
-                          <Store className="h-3.5 w-3.5 text-zinc-700" />
+                          <div className="mt-2 flex items-center gap-2 text-xs text-zinc-500">
+                            <Store className="h-3.5 w-3.5" />
 
-                          <Link
-                            href={`/admin/sellers/${item.shop.id}`}
-                            className="text-xs font-semibold text-zinc-500 transition hover:text-amber-400"
-                          >
                             {item.shop.name}
-                          </Link>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-8 sm:justify-end">
+                          <div className="text-right">
+
+                            <div className="text-xs text-zinc-600">
+                              {item.quantity} ×{" "}
+                              {money(
+                                item.unitPrice
+                              )}
+                            </div>
+
+                            <div className="mt-1 font-semibold">
+                              {money(
+                                item.totalPrice
+                              )}
+                            </div>
+                          </div>
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-5 sm:min-w-[330px] sm:text-right">
-                        <div>
-                          <div className="text-[10px] uppercase tracking-wide text-zinc-700">
-                            Ціна
-                          </div>
+                      <div className="mt-4 flex flex-wrap gap-2 text-[11px]">
+                        <span className="rounded-lg bg-white/[0.04] px-2.5 py-1 text-zinc-500">
+                          Stock:{" "}
+                          {item.variant
+                            ? item.variant
+                                .stock
+                            : item.product
+                                .stock}
+                        </span>
 
-                          <div className="mt-1 text-sm font-bold text-zinc-300">
-                            {formatMoney(item.unitPrice)}
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="text-[10px] uppercase tracking-wide text-zinc-700">
-                            Кількість
-                          </div>
-
-                          <div className="mt-1 text-sm font-bold text-zinc-300">
-                            × {item.quantity}
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="text-[10px] uppercase tracking-wide text-zinc-700">
-                            Сума
-                          </div>
-
-                          <div className="mt-1 text-sm font-black text-white">
-                            {formatMoney(item.totalPrice)}
-                          </div>
-                        </div>
+                        <span className="rounded-lg bg-white/[0.04] px-2.5 py-1 text-zinc-500">
+                          Reserved:{" "}
+                          {item.variant
+                            ? item.variant
+                                .reservedStock
+                            : item.product
+                                .reservedStock}
+                        </span>
                       </div>
                     </div>
-                  </div>
-                ))}
-
-                {order.items.length === 0 && (
-                  <EmptyState text="Товарів у замовленні немає." />
+                  )
                 )}
               </div>
             </section>
 
             {/* SELLERS */}
 
-            <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0b0f16]">
-              <div className="border-b border-white/[0.07] px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <Store className="h-4 w-4 text-amber-400" />
-
-                  <h2 className="text-sm font-black">
-                    Продавці
+            {order.sellers.length > 0 && (
+              <section className="rounded-2xl border border-white/10 bg-white/[0.03]">
+                <div className="border-b border-white/10 px-5 py-4">
+                  <h2 className="font-semibold">
+                    Магазини
                   </h2>
                 </div>
-              </div>
 
-              <div className="divide-y divide-white/[0.05]">
-                {order.sellers.map((seller) => (
-                  <div
-                    key={seller.id}
-                    className="p-5"
-                  >
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10 text-amber-400">
-                          <Store className="h-5 w-5" />
-                        </div>
-
-                        <div>
-                          <Link
-                            href={`/admin/sellers/${seller.shop.id}`}
-                            className="text-sm font-bold text-white transition hover:text-amber-400"
-                          >
-                            {seller.shop.name}
-                          </Link>
-
-                          <div className="mt-0.5 text-xs text-zinc-600">
-                            /{seller.shop.slug}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-5">
-                        <SellerAmount
-                          label="Товари"
-                          value={formatMoney(seller.subtotal)}
-                        />
-
-                        <SellerAmount
-                          label="Доставка"
-                          value={formatMoney(seller.shipping)}
-                        />
-
-                        <SellerAmount
-                          label="Разом"
-                          value={formatMoney(seller.total)}
-                          strong
-                        />
-
-                        <span
-                          className={`rounded-lg border px-2.5 py-1 text-[10px] font-black uppercase ${orderStatusStyle(
-                            seller.status
-                          )}`}
-                        >
-                          {orderStatusLabel(seller.status)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                {order.sellers.length === 0 && (
-                  <EmptyState text="Продавців не знайдено." />
-                )}
-              </div>
-            </section>
-
-            {/* CUSTOMER */}
-
-            <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0b0f16]">
-              <div className="border-b border-white/[0.07] px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <User className="h-4 w-4 text-amber-400" />
-
-                  <h2 className="text-sm font-black">
-                    Покупець
-                  </h2>
-                </div>
-              </div>
-
-              <div className="p-5">
-                <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
-                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-amber-400 text-lg font-black text-black">
-                    {customerInitial}
-                  </div>
-
-                  <div className="flex-1">
-                    <div className="text-lg font-black text-white">
-                      {order.user.name || "Без імені"}
-                    </div>
-
-                    <div className="mt-1 flex flex-wrap gap-x-5 gap-y-2 text-sm text-zinc-500">
-                      <span className="inline-flex items-center gap-2">
-                        <ReceiptText className="h-3.5 w-3.5" />
-                        {order.user.email}
-                      </span>
-
-                      {order.user.phone && (
-                        <span className="inline-flex items-center gap-2">
-                          <Phone className="h-3.5 w-3.5" />
-                          {order.user.phone}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <Link
-                    href={`/admin/users/${order.user.id}`}
-                    className="inline-flex items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-xs font-bold text-zinc-400 transition hover:border-amber-400/20 hover:bg-amber-400/[0.05] hover:text-white"
-                  >
-                    Профіль покупця
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </Link>
-                </div>
-              </div>
-            </section>
-
-            {/* SHIPPING ADDRESS */}
-
-            <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0b0f16]">
-              <div className="border-b border-white/[0.07] px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <MapPin className="h-4 w-4 text-amber-400" />
-
-                  <h2 className="text-sm font-black">
-                    Адреса доставки
-                  </h2>
-                </div>
-              </div>
-
-              <div className="p-5">
-                {address ? (
-                  <div className="grid gap-px overflow-hidden rounded-xl bg-white/[0.05] sm:grid-cols-2">
-                    <InfoItem
-                      label="Отримувач"
-                      value={recipientName || "—"}
-                    />
-
-                    <InfoItem
-                      label="Телефон"
-                      value={address.phone || "—"}
-                    />
-
-                    <InfoItem
-                      label="Країна"
-                      value={address.country || "—"}
-                    />
-
-                    <InfoItem
-                      label="Область"
-                      value={address.region || "—"}
-                    />
-
-                    <InfoItem
-                      label="Місто"
-                      value={address.city || "—"}
-                    />
-
-                    <InfoItem
-                      label="Вулиця"
-                      value={address.street || "—"}
-                    />
-
-                    <InfoItem
-                      label="Будинок"
-                      value={address.building || "—"}
-                    />
-
-                    <InfoItem
-                      label="Квартира"
-                      value={address.apartment || "—"}
-                    />
-
-                    <InfoItem
-                      label="Поштовий індекс"
-                      value={address.postalCode || "—"}
-                    />
-
-                    <InfoItem
-                      label="Нова пошта — відділення"
-                      value={address.novaPoshtaWarehouse || "—"}
-                    />
-
-                    <InfoItem
-                      label="Нова пошта — REF"
-                      value={address.novaPoshtaRef || "—"}
-                    />
-
-                    <InfoItem
-                      label="Назва адреси"
-                      value={address.title || "—"}
-                    />
-                  </div>
-                ) : (
-                  <EmptyState text="Адресу доставки не збережено." />
-                )}
-              </div>
-            </section>
-
-            {/* DELIVERY */}
-
-            <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0b0f16]">
-              <div className="border-b border-white/[0.07] px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <Truck className="h-4 w-4 text-amber-400" />
-
-                  <h2 className="text-sm font-black">
-                    Доставка
-                  </h2>
-                </div>
-              </div>
-
-              <div className="p-5">
-                {order.delivery ? (
-                  <div className="grid gap-px overflow-hidden rounded-xl bg-white/[0.05] sm:grid-cols-2">
-                    <InfoItem
-                      label="Спосіб"
-                      value={deliveryMethodLabel(
-                        order.delivery.method
-                      )}
-                    />
-
-                    <div className="bg-[#0b0f16] p-4">
-                      <div className="mb-1.5 text-[11px] text-zinc-600">
-                        Статус
-                      </div>
-
-                      <span
-                        className={`inline-flex rounded-lg border px-2.5 py-1 text-[10px] font-black uppercase ${deliveryStatusStyle(
-                          order.delivery.status
-                        )}`}
+                <div className="divide-y divide-white/[0.06]">
+                  {order.sellers.map(
+                    (seller) => (
+                      <div
+                        key={seller.id}
+                        className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between"
                       >
-                        {deliveryStatusLabel(
-                          order.delivery.status
-                        )}
-                      </span>
-                    </div>
-
-                    <InfoItem
-                      label="Перевізник"
-                      value={order.delivery.carrier || "—"}
-                    />
-
-                    <InfoItem
-                      label="Трек-номер"
-                      value={
-                        order.delivery.trackingNumber || "—"
-                      }
-                    />
-
-                    <InfoItem
-                      label="Місто"
-                      value={order.delivery.city || "—"}
-                    />
-
-                    <InfoItem
-                      label="Відділення"
-                      value={order.delivery.warehouse || "—"}
-                    />
-
-                    <InfoItem
-                      label="Адреса"
-                      value={order.delivery.address || "—"}
-                    />
-
-                    <InfoItem
-                      label="Відправлено"
-                      value={formatDate(
-                        order.delivery.shippedAt
-                      )}
-                    />
-
-                    <InfoItem
-                      label="Доставлено"
-                      value={formatDate(
-                        order.delivery.deliveredAt
-                      )}
-                    />
-                  </div>
-                ) : (
-                  <EmptyState text="Дані доставки ще не створені." />
-                )}
-              </div>
-            </section>
-
-            {/* PAYMENTS */}
-
-            <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0b0f16]">
-              <div className="border-b border-white/[0.07] px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <CreditCard className="h-4 w-4 text-amber-400" />
-
-                  <h2 className="text-sm font-black">
-                    Оплата
-                  </h2>
-                </div>
-              </div>
-
-              <div className="divide-y divide-white/[0.05]">
-                {order.payments.map((payment) => (
-                  <div
-                    key={payment.id}
-                    className="p-5"
-                  >
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-bold text-white">
-                            {paymentMethodLabel(
-                              payment.method
-                            )}
-                          </span>
-
-                          <span
-                            className={`rounded-lg border px-2.5 py-1 text-[10px] font-black uppercase ${paymentStatusStyle(
-                              payment.status
-                            )}`}
-                          >
-                            {paymentStatusLabel(
-                              payment.status
-                            )}
-                          </span>
-                        </div>
-
-                        <div className="mt-2 space-y-1 text-xs text-zinc-600">
-                          <div>
-                            ID:{" "}
-                            <span className="font-mono">
-                              {payment.id}
-                            </span>
+                        <div>
+                          <div className="font-medium">
+                            {seller.shop.name}
                           </div>
 
-                          {payment.provider && (
-                            <div>
-                              Провайдер: {payment.provider}
+                          <div className="mt-1 text-xs text-zinc-600">
+                            Підсумок магазину:{" "}
+                            {money(
+                              seller.total
+                            )}
+                          </div>
+
+                          {seller.commissionAmount !==
+                            undefined && (
+                            <div className="mt-1 text-xs text-zinc-600">
+                              Комісія:{" "}
+                              {money(
+                                seller.commissionAmount
+                              )}
                             </div>
                           )}
 
-                          {payment.transactionId && (
-                            <div>
-                              Транзакція:{" "}
-                              <span className="font-mono">
-                                {payment.transactionId}
-                              </span>
+                          {seller.sellerAmount !==
+                            undefined && (
+                            <div className="mt-1 text-xs text-emerald-400/70">
+                              Продавцю:{" "}
+                              {money(
+                                seller.sellerAmount
+                              )}
                             </div>
                           )}
                         </div>
+
+                        <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-400">
+                          {
+                            STATUS_LABELS[
+                              seller.status
+                            ] ??
+                              seller.status
+                          }
+                        </span>
                       </div>
-
-                      <div className="text-left lg:text-right">
-                        <div className="text-xl font-black text-white">
-                          {formatMoney(payment.amount)}
-                        </div>
-
-                        <div className="mt-1 text-xs text-zinc-600">
-                          Створено{" "}
-                          {formatDate(payment.createdAt)}
-                        </div>
-
-                        {payment.paidAt && (
-                          <div className="mt-1 text-xs text-emerald-400/70">
-                            Оплачено{" "}
-                            {formatDate(payment.paidAt)}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                {order.payments.length === 0 && (
-                  <EmptyState text="Платежів для цього замовлення немає." />
-                )}
-              </div>
-            </section>
-
-            {/* CUSTOMER NOTE */}
-
-            {order.customerNote && (
-              <section className="overflow-hidden rounded-2xl border border-amber-400/10 bg-amber-400/[0.03]">
-                <div className="border-b border-amber-400/10 px-5 py-4">
-                  <div className="flex items-center gap-2 text-amber-400">
-                    <FileText className="h-4 w-4" />
-
-                    <h2 className="text-sm font-black">
-                      Коментар покупця
-                    </h2>
-                  </div>
-                </div>
-
-                <div className="p-5">
-                  <p className="whitespace-pre-wrap text-sm leading-7 text-zinc-400">
-                    {order.customerNote}
-                  </p>
+                    )
+                  )}
                 </div>
               </section>
             )}
+
+            {/* PAYMENTS */}
+
+            <section className="rounded-2xl border border-white/10 bg-white/[0.03]">
+
+              <div className="border-b border-white/10 px-5 py-4">
+                <h2 className="font-semibold">
+                  Платежі
+                </h2>
+              </div>
+
+              <div className="divide-y divide-white/[0.06]">
+
+                {order.payments.length === 0 ? (
+                  <div className="p-5 text-sm text-zinc-600">
+                    Платежів немає.
+                  </div>
+                ) : (
+                  order.payments.map(
+                    (payment) => (
+                      <div
+                        key={payment.id}
+                        className="p-5"
+                      >
+
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+
+                          <div>
+                            <div className="font-medium">
+                              {
+                                PAYMENT_METHOD_LABELS[
+                                  payment.method
+                                ] ??
+                                  payment.method
+                              }
+                            </div>
+
+                            <div className="mt-1 text-xs text-zinc-600">
+                              {payment.provider ??
+                                "—"}
+                            </div>
+                          </div>
+
+                          <div className="lg:text-right">
+
+                            <div className="font-semibold">
+                              {money(
+                                payment.amount
+                              )}
+                            </div>
+
+                            <div className="mt-1 text-xs text-zinc-500">
+                              {
+                                PAYMENT_STATUS_LABELS[
+                                  payment.status
+                                ] ??
+                                  payment.status
+                              }
+                            </div>
+
+                          </div>
+                        </div>
+
+                        {payment.transactionId && (
+                          <div className="mt-3 rounded-xl bg-black/20 p-3 text-xs text-zinc-500">
+                            Transaction ID:{" "}
+                            <span className="break-all text-zinc-300">
+                              {
+                                payment.transactionId
+                              }
+                            </span>
+                          </div>
+                        )}
+
+                        {payment.paidAt && (
+                          <div className="mt-2 text-xs text-emerald-400/70">
+                            Оплачено:{" "}
+                            {dateTime(
+                              payment.paidAt
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  )
+                )}
+              </div>
+            </section>
           </div>
 
-          {/* SIDEBAR */}
+          {/* RIGHT */}
 
           <aside className="space-y-6">
 
-            {/* ORDER */}
+            {/* CUSTOMER */}
 
-            <section className="rounded-2xl border border-white/[0.07] bg-[#0b0f16] p-5">
-              <div className="mb-4 text-[10px] font-black uppercase tracking-[0.2em] text-zinc-600">
-                Замовлення
+            <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+
+              <div className="flex items-center gap-2">
+                <User className="h-5 w-5 text-zinc-500" />
+
+                <h2 className="font-semibold">
+                  Покупець
+                </h2>
               </div>
 
-              <div className="space-y-4">
-                <SidebarItem
-                  label="Номер"
-                  value={`#${order.orderNumber}`}
-                />
+              <div className="mt-5 space-y-3">
 
-                <SidebarItem
-                  label="ID"
-                  value={order.id}
-                  mono
-                />
+                <div>
+                  <div className="text-xs text-zinc-600">
+                    Ім'я
+                  </div>
 
-                <SidebarItem
-                  label="Статус"
-                  value={orderStatusLabel(order.status)}
-                />
+                  <div className="mt-1 text-sm">
+                    {order.user.name ??
+                      "Не вказано"}
+                  </div>
+                </div>
 
-                <SidebarItem
-                  label="Створено"
-                  value={formatDate(order.createdAt)}
-                />
+                <div>
+                  <div className="text-xs text-zinc-600">
+                    Email
+                  </div>
 
-                <SidebarItem
-                  label="Оновлено"
-                  value={formatDate(order.updatedAt)}
-                />
+                  <div className="mt-1 break-all text-sm">
+                    {order.user.email}
+                  </div>
+                </div>
 
-                <SidebarItem
-                  label="Валюта"
-                  value="UAH"
-                />
+                {order.user.phone && (
+                  <div>
+                    <div className="text-xs text-zinc-600">
+                      Телефон
+                    </div>
+
+                    <div className="mt-1 text-sm">
+                      {order.user.phone}
+                    </div>
+                  </div>
+                )}
               </div>
             </section>
 
-            {/* FINANCES */}
+            {/* ADDRESS */}
 
-            <section className="rounded-2xl border border-amber-400/10 bg-amber-400/[0.03] p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <ReceiptText className="h-4 w-4 text-amber-400" />
+            <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
 
-                <div className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-400/70">
-                  Фінанси
-                </div>
+              <div className="flex items-center gap-2">
+                <MapPin className="h-5 w-5 text-zinc-500" />
+
+                <h2 className="font-semibold">
+                  Доставка
+                </h2>
               </div>
 
-              <div className="space-y-3">
-                <MoneyRow
-                  label="Товари"
-                  value={order.subtotal}
-                />
+              {order.shippingAddress ? (
+                <div className="mt-5 space-y-2 text-sm text-zinc-300">
 
-                <MoneyRow
-                  label="Знижка"
-                  value={order.discountAmount}
-                  negative
-                />
+                  {(order.shippingAddress
+                    .firstName ||
+                    order.shippingAddress
+                      .lastName) && (
+                    <div>
+                      {
+                        order.shippingAddress
+                          .firstName
+                      }{" "}
+                      {
+                        order.shippingAddress
+                          .lastName
+                      }
+                    </div>
+                  )}
 
-                <MoneyRow
-                  label="Доставка"
-                  value={order.deliveryAmount}
-                />
+                  {order.shippingAddress
+                    .phone && (
+                    <div className="text-zinc-500">
+                      {
+                        order.shippingAddress
+                          .phone
+                      }
+                    </div>
+                  )}
 
-                <div className="border-t border-amber-400/10 pt-3">
+                  {order.shippingAddress
+                    .city && (
+                    <div>
+                      {
+                        order.shippingAddress
+                          .city
+                      }
+                    </div>
+                  )}
+
+                  {order.shippingAddress
+                    .street && (
+                    <div>
+                      {
+                        order.shippingAddress
+                          .street
+                      }
+
+                      {order.shippingAddress
+                        .building &&
+                        `, ${order.shippingAddress.building}`}
+
+                      {order.shippingAddress
+                        .apartment &&
+                        `, кв. ${order.shippingAddress.apartment}`}
+                    </div>
+                  )}
+
+                  {order.shippingAddress
+                    .novaPoshtaWarehouse && (
+                    <div className="rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-400">
+                      Нова пошта:{" "}
+                      {
+                        order.shippingAddress
+                          .novaPoshtaWarehouse
+                      }
+                    </div>
+                  )}
+
+                  {order.shippingAddress
+                    .postalCode && (
+                    <div className="text-xs text-zinc-600">
+                      Індекс:{" "}
+                      {
+                        order.shippingAddress
+                          .postalCode
+                      }
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-5 text-sm text-zinc-600">
+                  Адреса не вказана.
+                </div>
+              )}
+            </section>
+
+            {/* TOTAL */}
+
+            <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+
+              <h2 className="font-semibold">
+                Розрахунок
+              </h2>
+
+              <div className="mt-5 space-y-3 text-sm">
+
+                <div className="flex justify-between gap-4 text-zinc-500">
+                  <span>Товари</span>
+
+                  <span>
+                    {money(order.subtotal)}
+                  </span>
+                </div>
+
+                <div className="flex justify-between gap-4 text-zinc-500">
+                  <span>Знижка</span>
+
+                  <span>
+                    -{" "}
+                    {money(
+                      order.discountAmount
+                    )}
+                  </span>
+                </div>
+
+                <div className="flex justify-between gap-4 text-zinc-500">
+                  <span>Доставка</span>
+
+                  <span>
+                    {money(
+                      order.deliveryAmount
+                    )}
+                  </span>
+                </div>
+
+                <div className="border-t border-white/10 pt-4">
+
                   <div className="flex items-end justify-between gap-4">
-                    <span className="text-sm font-bold text-zinc-400">
+
+                    <span className="font-semibold">
                       Разом
                     </span>
 
-                    <span className="text-2xl font-black text-amber-400">
-                      {formatMoney(order.total)}
+                    <span className="text-2xl font-bold">
+                      {money(order.total)}
                     </span>
+
                   </div>
                 </div>
               </div>
             </section>
 
-            {/* DELIVERY QUICK INFO */}
+            {/* NOTE */}
 
-            <section className="rounded-2xl border border-white/[0.07] bg-[#0b0f16] p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <Truck className="h-4 w-4 text-amber-400" />
+            {order.customerNote && (
+              <section className="rounded-2xl border border-amber-400/10 bg-amber-400/[0.04] p-5">
 
-                <div className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-600">
-                  Доставка
-                </div>
-              </div>
+                <h2 className="font-semibold text-amber-200">
+                  Коментар покупця
+                </h2>
 
-              <div className="space-y-4">
-                <SidebarItem
-                  label="Метод"
-                  value={deliveryMethodLabel(
-                    order.shippingMethod
-                  )}
-                />
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-400">
+                  {order.customerNote}
+                </p>
 
-                <SidebarItem
-                  label="Адреса"
-                  value={
-                    address
-                      ? `${address.city || "—"}, ${
-                          address.firstName || ""
-                        } ${address.lastName || ""}`.trim()
-                      : "Не вказано"
-                  }
-                />
-
-                {order.delivery?.trackingNumber && (
-                  <SidebarItem
-                    label="Трек-номер"
-                    value={
-                      order.delivery.trackingNumber
-                    }
-                    mono
-                  />
-                )}
-              </div>
-            </section>
-
-            {/* PAYMENT QUICK INFO */}
-
-            <section className="rounded-2xl border border-white/[0.07] bg-[#0b0f16] p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <CreditCard className="h-4 w-4 text-amber-400" />
-
-                <div className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-600">
-                  Оплата
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-4">
-                  <span className="text-xs text-zinc-600">
-                    Статус
-                  </span>
-
-                  <span
-                    className={`rounded-lg border px-2 py-1 text-[10px] font-bold ${paymentStatusStyle(
-                      paymentStatus
-                    )}`}
-                  >
-                    {paymentStatusLabel(paymentStatus)}
-                  </span>
-                </div>
-
-                <SidebarItem
-                  label="Платежів"
-                  value={String(order.payments.length)}
-                />
-
-                {latestPayment && (
-                  <SidebarItem
-                    label="Метод"
-                    value={paymentMethodLabel(
-                      latestPayment.method
-                    )}
-                  />
-                )}
-              </div>
-            </section>
-
-            {/* QUICK LINKS */}
-
-            <section className="rounded-2xl border border-white/[0.07] bg-[#0b0f16] p-5">
-              <div className="mb-4 text-[10px] font-black uppercase tracking-[0.2em] text-zinc-600">
-                Швидкі переходи
-              </div>
-
-              <div className="space-y-2">
-                <QuickLink
-                  href={`/admin/users/${order.user.id}`}
-                  icon={<User className="h-4 w-4" />}
-                  label="Профіль покупця"
-                />
-
-                <QuickLink
-                  href="/admin/orders"
-                  icon={
-                    <ShoppingBag className="h-4 w-4" />
-                  }
-                  label="Усі замовлення"
-                />
-
-                <QuickLink
-                  href="/admin/products"
-                  icon={<Package className="h-4 w-4" />}
-                  label="Усі товари"
-                />
-
-                <QuickLink
-                  href="/admin/sellers"
-                  icon={<Store className="h-4 w-4" />}
-                  label="Усі продавці"
-                />
-              </div>
-            </section>
+              </section>
+            )}
           </aside>
         </div>
       </div>
-    </main>
-  );
-}
-
-/* ============================================================
-   COMPONENTS
-============================================================ */
-
-function EmptyState({
-  text,
-}: {
-  text: string;
-}) {
-  return (
-    <div className="px-6 py-12 text-center text-sm text-zinc-600">
-      {text}
     </div>
-  );
-}
-
-function StatBox({
-  label,
-  value,
-  icon,
-  accent = false,
-}: {
-  label: string;
-  value: string;
-  icon: React.ReactNode;
-  accent?: boolean;
-}) {
-  return (
-    <div className="bg-[#0b0f16] p-5">
-      <div
-        className={`mb-3 flex h-9 w-9 items-center justify-center rounded-lg ${
-          accent
-            ? "bg-amber-400/10 text-amber-400"
-            : "bg-white/[0.03] text-zinc-600"
-        }`}
-      >
-        {icon}
-      </div>
-
-      <div
-        className={`text-xl font-black ${
-          accent ? "text-amber-400" : "text-white"
-        }`}
-      >
-        {value}
-      </div>
-
-      <div className="mt-1 text-xs text-zinc-600">
-        {label}
-      </div>
-    </div>
-  );
-}
-
-function InfoItem({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="bg-[#0b0f16] p-4">
-      <div className="mb-1.5 text-[11px] text-zinc-600">
-        {label}
-      </div>
-
-      <div className="break-words text-sm font-semibold text-zinc-300">
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function SidebarItem({
-  label,
-  value,
-  mono = false,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-4">
-      <span className="shrink-0 text-xs text-zinc-600">
-        {label}
-      </span>
-
-      <span
-        className={`max-w-[220px] break-words text-right text-xs text-zinc-400 ${
-          mono ? "font-mono text-[10px]" : ""
-        }`}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function MoneyRow({
-  label,
-  value,
-  negative = false,
-}: {
-  label: string;
-  value: unknown;
-  negative?: boolean;
-}) {
-  const amount = Number(value);
-
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <span className="text-xs text-zinc-600">
-        {label}
-      </span>
-
-      <span
-        className={`text-sm font-bold ${
-          negative && amount > 0
-            ? "text-red-300"
-            : "text-zinc-300"
-        }`}
-      >
-        {negative && amount > 0
-          ? `−${formatMoney(value)}`
-          : formatMoney(value)}
-      </span>
-    </div>
-  );
-}
-
-function SellerAmount({
-  label,
-  value,
-  strong = false,
-}: {
-  label: string;
-  value: string;
-  strong?: boolean;
-}) {
-  return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wide text-zinc-700">
-        {label}
-      </div>
-
-      <div
-        className={`mt-1 text-sm ${
-          strong
-            ? "font-black text-white"
-            : "font-bold text-zinc-400"
-        }`}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function QuickLink({
-  href,
-  icon,
-  label,
-}: {
-  href: string;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <Link
-      href={href}
-      className="flex items-center gap-3 rounded-xl border border-white/[0.05] bg-white/[0.02] px-3 py-3 text-sm font-medium text-zinc-400 transition hover:border-amber-400/10 hover:bg-amber-400/[0.05] hover:text-white"
-    >
-      <span className="text-zinc-600">
-        {icon}
-      </span>
-
-      <span className="flex-1">
-        {label}
-      </span>
-
-      <ExternalLink className="h-3.5 w-3.5 text-zinc-700" />
-    </Link>
   );
 }

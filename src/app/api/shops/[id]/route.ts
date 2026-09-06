@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
 
 // =====================================================
 // TYPES
@@ -205,6 +206,56 @@ export async function PATCH(
         },
         {
           status: 404,
+        }
+      );
+    }
+
+    // =================================================
+    // AUTH: власник магазину або адмін
+    // =================================================
+
+    const currentUser = await getCurrentUser();
+
+    if (!currentUser) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Необхідна авторизація",
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
+    const isOwner = existingShop.userId === currentUser.id;
+    const isAdmin = currentUser.role === "ADMIN";
+
+    if (!isOwner && !isAdmin) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Доступ заборонено",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
+
+    // sellerStatus та isActive контролює лише адміністрація —
+    // продавець не може сам собі схвалити/розблокувати магазин
+    if (
+      !isAdmin &&
+      (body.sellerStatus !== undefined || body.isActive !== undefined)
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Змінювати статус магазину може лише адміністратор",
+        },
+        {
+          status: 403,
         }
       );
     }
@@ -514,6 +565,20 @@ export async function DELETE(
   }
 ) {
   try {
+    const admin = await getCurrentUser();
+
+    if (!admin || admin.role !== "ADMIN") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Видаляти магазин може лише адміністратор",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
+
     const { id } = await context.params;
 
     if (!id?.trim()) {

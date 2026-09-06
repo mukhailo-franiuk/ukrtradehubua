@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getAdmin } from "@/lib/auth";
 
 // =====================================================
 // GET /api/categories
@@ -58,6 +59,18 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const body = await request.json();
 
     const {

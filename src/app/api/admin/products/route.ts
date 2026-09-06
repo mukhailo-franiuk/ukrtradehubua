@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getAdmin } from "@/lib/auth";
 
 function toNullableString(value: unknown) {
   if (typeof value !== "string") {
@@ -57,6 +58,18 @@ function slugify(value: string) {
 
 export async function GET() {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const [categories, brands, shops] =
       await Promise.all([
         db.category.findMany({
@@ -138,6 +151,18 @@ export async function POST(
   request: NextRequest
 ) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const body = await request.json();
 
     const {

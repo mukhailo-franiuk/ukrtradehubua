@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getAdmin } from "@/lib/auth";
 
 // =====================================================
 // GET /api/categories/[id]
@@ -90,6 +91,18 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const { id } = await params;
 
     if (!id) {
@@ -470,6 +483,18 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const { id } = await params;
 
     if (!id) {

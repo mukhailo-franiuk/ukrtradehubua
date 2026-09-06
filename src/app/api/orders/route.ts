@@ -1,68 +1,21 @@
-
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
+import { calculateCommission } from "@/lib/marketplace/commission";
 
-// =====================================================
-// TYPES
-// =====================================================
+export const runtime = "nodejs";
 
-type CreateOrderBody = {
-  shippingAddressId?: string | null;
-  shippingMethod?: "NOVA_POSHTA" | "UKRPOSHTA" | "MIST" | "COURIER" | "PICKUP" | null;
-  customerNote?: string | null;
-};
-
-// =====================================================
-// AUTH
-// =====================================================
-
-async function getCurrentUser(request: NextRequest) {
-  const token = request.cookies.get("session_token")?.value;
-
-  if (!token) {
-    return null;
-  }
-
-  const session = await db.session.findUnique({
-    where: {
-      token,
-    },
-    include: {
-      user: true,
-    },
-  });
-
-  if (!session) {
-    return null;
-  }
-
-  if (session.expiresAt <= new Date()) {
-    return null;
-  }
-
-  if (session.user.isBlocked) {
-    return null;
-  }
-
-  if (session.user.status !== "ACTIVE") {
-    return null;
-  }
-
-  return session.user;
-}
-
-// =====================================================
-// ORDER INCLUDE
-// =====================================================
+/*
+ * ============================================================
+ * ORDER INCLUDE
+ * ============================================================
+ */
 
 const orderInclude = {
   shippingAddress: true,
 
   items: {
-    orderBy: {
-      createdAt: "asc" as const,
-    },
-
     include: {
       product: {
         include: {
@@ -70,7 +23,6 @@ const orderInclude = {
             orderBy: {
               sortOrder: "asc" as const,
             },
-            take: 1,
           },
         },
       },
@@ -82,47 +34,89 @@ const orderInclude = {
           id: true,
           name: true,
           slug: true,
-          rating: true,
         },
       },
+    },
+
+    orderBy: {
+      createdAt: "asc" as const,
     },
   },
 
   sellers: {
-    orderBy: {
-      createdAt: "asc" as const,
-    },
-
     include: {
       shop: {
         select: {
           id: true,
           name: true,
           slug: true,
-          rating: true,
         },
       },
     },
   },
 
-  payments: true,
+  payments: {
+    select: {
+      id: true,
+      amount: true,
+      method: true,
+      status: true,
+      provider: true,
+      transactionId: true,
+      paidAt: true,
+      createdAt: true,
+      updatedAt: true,
+    },
 
-  delivery: true,
+    orderBy: {
+      createdAt: "desc" as const,
+    },
+  },
+} satisfies Prisma.OrderInclude;
+
+/*
+ * ============================================================
+ * DELIVERY METHODS
+ * ============================================================
+ */
+
+const DELIVERY_METHODS = [
+  "NOVA_POSHTA",
+  "UKRPOSHTA",
+  "MIST",
+  "COURIER",
+  "PICKUP",
+] as const;
+
+type DeliveryMethod =
+  (typeof DELIVERY_METHODS)[number];
+
+/*
+ * ============================================================
+ * REQUEST BODY
+ * ============================================================
+ */
+
+type CreateOrderBody = {
+  shippingAddressId?: string | null;
+  shippingMethod?: string | null;
+  customerNote?: string | null;
 };
 
-// =====================================================
-// GET /api/orders
-// =====================================================
+/*
+ * ============================================================
+ * GET /api/orders
+ * ============================================================
+ */
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    const user = await getCurrentUser(request);
+    const user = await getCurrentUser();
 
     if (!user) {
       return NextResponse.json(
         {
-          success: false,
-          error: "Необхідна авторизація",
+          error: "Unauthorized",
         },
         {
           status: 401,
@@ -135,25 +129,22 @@ export async function GET(request: NextRequest) {
         userId: user.id,
       },
 
+      include: orderInclude,
+
       orderBy: {
         createdAt: "desc",
       },
-
-      include: orderInclude,
     });
 
     return NextResponse.json({
-      success: true,
-      data: orders,
-      total: orders.length,
+      orders,
     });
   } catch (error) {
-    console.error("GET /api/orders error:", error);
+    console.error("[ORDERS_GET_ERROR]", error);
 
     return NextResponse.json(
       {
-        success: false,
-        error: "Не вдалося отримати замовлення",
+        error: "Failed to load orders",
       },
       {
         status: 500,
@@ -162,23 +153,51 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// =====================================================
-// POST /api/orders
-// =====================================================
+/*
+ * ============================================================
+ * POST /api/orders
+ *
+ * Створення замовлення з кошика.
+ *
+ * На цьому етапі:
+ *
+ * Product.stock
+ *     НЕ зменшуємо.
+ *
+ * Product.reservedStock
+ *     збільшуємо.
+ *
+ * Після успішної оплати finalizePaidOrder():
+ *
+ * stock -= quantity
+ * reservedStock -= quantity
+ *
+ * Також:
+ *
+ * OrderSeller.commissionRate
+ * OrderSeller.commissionAmount
+ * OrderSeller.sellerAmount
+ *
+ * фіксуються під час створення замовлення.
+ * ============================================================
+ */
 
-export async function POST(request: NextRequest) {
+export async function POST(
+  request: NextRequest
+) {
   try {
-    // ===================================================
-    // AUTH
-    // ===================================================
+    /*
+     * ========================================================
+     * AUTH
+     * ========================================================
+     */
 
-    const user = await getCurrentUser(request);
+    const user = await getCurrentUser();
 
     if (!user) {
       return NextResponse.json(
         {
-          success: false,
-          error: "Необхідна авторизація",
+          error: "Unauthorized",
         },
         {
           status: 401,
@@ -186,19 +205,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ===================================================
-    // BODY
-    // ===================================================
+    /*
+     * ========================================================
+     * BODY
+     * ========================================================
+     */
 
     let body: CreateOrderBody;
 
     try {
-      body = (await request.json()) as CreateOrderBody;
+      body = await request.json();
     } catch {
       return NextResponse.json(
         {
-          success: false,
-          error: "Некоректний JSON",
+          error: "Invalid JSON",
         },
         {
           status: 400,
@@ -207,46 +227,74 @@ export async function POST(request: NextRequest) {
     }
 
     const shippingAddressId =
-      body.shippingAddressId?.trim() || null;
+      typeof body.shippingAddressId === "string"
+        ? body.shippingAddressId.trim() || null
+        : null;
 
     const shippingMethod =
-      body.shippingMethod ?? null;
+      typeof body.shippingMethod === "string"
+        ? body.shippingMethod.trim() || null
+        : null;
 
     const customerNote =
-      body.customerNote?.trim() || null;
+      typeof body.customerNote === "string"
+        ? body.customerNote.trim() || null
+        : null;
 
-    // ===================================================
-    // VALIDATE SHIPPING ADDRESS
-    // ===================================================
+    /*
+     * ========================================================
+     * DELIVERY METHOD
+     * ========================================================
+     */
+
+    if (
+      shippingMethod &&
+      !DELIVERY_METHODS.includes(
+        shippingMethod as DeliveryMethod
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error: "Invalid shipping method",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    /*
+     * ========================================================
+     * SHIPPING ADDRESS
+     * ========================================================
+     */
 
     if (shippingAddressId) {
-      const address = await db.address.findFirst({
-        where: {
-          id: shippingAddressId,
-          userId: user.id,
-        },
+      const shippingAddress =
+        await db.address.findFirst({
+          where: {
+            id: shippingAddressId,
+            userId: user.id,
+          },
+        });
 
-        select: {
-          id: true,
-        },
-      });
-
-      if (!address) {
+      if (!shippingAddress) {
         return NextResponse.json(
           {
-            success: false,
-            error: "Адресу доставки не знайдено",
+            error: "Shipping address not found",
           },
           {
-            status: 404,
+            status: 400,
           }
         );
       }
     }
 
-    // ===================================================
-    // CART
-    // ===================================================
+    /*
+     * ========================================================
+     * CART
+     * ========================================================
+     */
 
     const cart = await db.cart.findUnique({
       where: {
@@ -255,10 +303,6 @@ export async function POST(request: NextRequest) {
 
       include: {
         items: {
-          orderBy: {
-            createdAt: "asc",
-          },
-
           include: {
             product: {
               include: {
@@ -268,6 +312,10 @@ export async function POST(request: NextRequest) {
 
             variant: true,
           },
+
+          orderBy: {
+            createdAt: "asc",
+          },
         },
       },
     });
@@ -275,8 +323,7 @@ export async function POST(request: NextRequest) {
     if (!cart || cart.items.length === 0) {
       return NextResponse.json(
         {
-          success: false,
-          error: "Кошик порожній",
+          error: "Cart is empty",
         },
         {
           status: 400,
@@ -284,83 +331,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ===================================================
-    // VALIDATE CART
-    // ===================================================
+    /*
+     * ========================================================
+     * PRE-VALIDATION
+     * ========================================================
+     */
 
     for (const item of cart.items) {
-      const product = item.product;
+      /*
+       * ------------------------------------------------------
+       * QUANTITY
+       * ------------------------------------------------------
+       */
 
-      if (!product) {
+      if (
+        !Number.isInteger(item.quantity) ||
+        item.quantity <= 0
+      ) {
         return NextResponse.json(
           {
-            success: false,
-            error: "Один із товарів у кошику більше не існує",
-          },
-          {
-            status: 409,
-          }
-        );
-      }
-
-      if (product.status !== "ACTIVE") {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Товар "${product.title}" більше недоступний`,
-            productId: product.id,
-          },
-          {
-            status: 409,
-          }
-        );
-      }
-
-      if (!product.shop) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Для товару "${product.title}" не знайдено магазин`,
-            productId: product.id,
-          },
-          {
-            status: 409,
-          }
-        );
-      }
-
-      if (!product.shop.isActive) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Магазин "${product.shop.name}" неактивний`,
-            shopId: product.shop.id,
-          },
-          {
-            status: 409,
-          }
-        );
-      }
-
-      if (product.shop.sellerStatus !== "ACTIVE") {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Продавець магазину "${product.shop.name}" неактивний`,
-            shopId: product.shop.id,
-          },
-          {
-            status: 409,
-          }
-        );
-      }
-
-      if (!Number.isInteger(item.quantity) || item.quantity < 1) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Некоректна кількість товару "${product.title}"`,
-            productId: product.id,
+            error: "Invalid cart item quantity",
+            itemId: item.id,
           },
           {
             status: 400,
@@ -368,17 +359,22 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // -------------------------------------------------
-      // VARIANT VALIDATION
-      // -------------------------------------------------
+      const product = item.product;
+      const shop = product.shop;
 
-      if (item.variantId && !item.variant) {
+      /*
+       * ------------------------------------------------------
+       * PRODUCT STATUS
+       * ------------------------------------------------------
+       */
+
+      if (product.status !== "ACTIVE") {
         return NextResponse.json(
           {
-            success: false,
-            error: `Варіант товару "${product.title}" більше не існує`,
+            error:
+              "One of the products is no longer available",
             productId: product.id,
-            variantId: item.variantId,
+            productTitle: product.title,
           },
           {
             status: 409,
@@ -386,13 +382,19 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      if (item.variant && !item.variant.isActive) {
+      /*
+       * ------------------------------------------------------
+       * SHOP STATUS
+       * ------------------------------------------------------
+       */
+
+      if (!shop.isActive) {
         return NextResponse.json(
           {
-            success: false,
-            error: `Варіант товару "${product.title}" більше недоступний`,
-            productId: product.id,
-            variantId: item.variant.id,
+            error:
+              "One of the shops is currently inactive",
+            shopId: shop.id,
+            shopName: shop.name,
           },
           {
             status: 409,
@@ -400,23 +402,105 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // -------------------------------------------------
-      // STOCK VALIDATION
-      // -------------------------------------------------
+      /*
+       * ------------------------------------------------------
+       * SELLER STATUS
+       * ------------------------------------------------------
+       */
 
-      if (item.variant) {
-        const availableVariantStock =
-          item.variant.stock - item.variant.reservedStock;
+      if (shop.sellerStatus !== "ACTIVE") {
+        return NextResponse.json(
+          {
+            error:
+              "One of the sellers is currently unavailable",
+            shopId: shop.id,
+            shopName: shop.name,
+          },
+          {
+            status: 409,
+          }
+        );
+      }
 
-        if (availableVariantStock < item.quantity) {
+      /*
+       * ======================================================
+       * VARIANT
+       * ======================================================
+       */
+
+      if (item.variantId) {
+        const variant = item.variant;
+
+        if (!variant) {
           return NextResponse.json(
             {
-              success: false,
-              error: `Недостатньо товару "${product.title}" у вибраному варіанті`,
+              error: "Product variant not found",
               productId: product.id,
-              variantId: item.variant.id,
-              available: Math.max(availableVariantStock, 0),
+              variantId: item.variantId,
+            },
+            {
+              status: 409,
+            }
+          );
+        }
+
+        /*
+         * Variant повинен належати Product.
+         */
+
+        if (
+          variant.productId !== product.id
+        ) {
+          return NextResponse.json(
+            {
+              error:
+                "Product variant mismatch",
+              productId: product.id,
+              variantId: variant.id,
+            },
+            {
+              status: 409,
+            }
+          );
+        }
+
+        /*
+         * Variant active.
+         */
+
+        if (!variant.isActive) {
+          return NextResponse.json(
+            {
+              error:
+                "Product variant is no longer available",
+              productId: product.id,
+              variantId: variant.id,
+            },
+            {
+              status: 409,
+            }
+          );
+        }
+
+        /*
+         * Available variant stock.
+         */
+
+        const available =
+          variant.stock -
+          variant.reservedStock;
+
+        if (
+          available < item.quantity
+        ) {
+          return NextResponse.json(
+            {
+              error:
+                "Not enough product variant stock",
+              productId: product.id,
+              variantId: variant.id,
               requested: item.quantity,
+              available,
             },
             {
               status: 409,
@@ -424,17 +508,27 @@ export async function POST(request: NextRequest) {
           );
         }
       } else {
-        const availableStock =
-          product.stock - product.reservedStock;
+        /*
+         * ====================================================
+         * PRODUCT WITHOUT VARIANT
+         * ====================================================
+         */
 
-        if (availableStock < item.quantity) {
+        const available =
+          product.stock -
+          product.reservedStock;
+
+        if (
+          available < item.quantity
+        ) {
           return NextResponse.json(
             {
-              success: false,
-              error: `Недостатньо товару "${product.title}"`,
+              error:
+                "Not enough product stock",
               productId: product.id,
-              available: Math.max(availableStock, 0),
+              productTitle: product.title,
               requested: item.quantity,
+              available,
             },
             {
               status: 409,
@@ -444,261 +538,598 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ===================================================
-    // CREATE ORDER
-    // ===================================================
+    /*
+     * ========================================================
+     * TRANSACTION
+     * ========================================================
+     */
 
     const order = await db.$transaction(
       async (tx) => {
-        // -------------------------------------------------
-        // CALCULATE TOTALS
-        // -------------------------------------------------
+        /*
+         * ====================================================
+         * RELOAD CART
+         * ====================================================
+         */
 
-        let subtotal = 0;
+        const currentCart =
+          await tx.cart.findUnique({
+            where: {
+              id: cart.id,
+            },
 
-        for (const item of cart.items) {
-          const price = item.variant?.price != null
-            ? Number(item.variant.price)
-            : Number(item.product.price);
+            include: {
+              items: {
+                include: {
+                  product: {
+                    include: {
+                      shop: true,
+                    },
+                  },
 
-          subtotal += price * item.quantity;
+                  variant: true,
+                },
+
+                orderBy: {
+                  createdAt: "asc",
+                },
+              },
+            },
+          });
+
+        if (
+          !currentCart ||
+          currentCart.items.length === 0
+        ) {
+          throw new Error("CART_EMPTY");
         }
 
-        const discountAmount = 0;
-        const deliveryAmount = 0;
+        /*
+         * ====================================================
+         * SECOND VALIDATION
+         * ====================================================
+         */
 
-        const total =
-          subtotal -
-          discountAmount +
-          deliveryAmount;
-
-        // -------------------------------------------------
-        // ORDER NUMBER
-        // -------------------------------------------------
-
-        const orderNumber =
-          `UTH-${Date.now()}-${Math.floor(
-            Math.random() * 10000
-          )
-            .toString()
-            .padStart(4, "0")}`;
-
-        // -------------------------------------------------
-        // CREATE ORDER
-        // -------------------------------------------------
-
-        const createdOrder = await tx.order.create({
-          data: {
-            userId: user.id,
-
-            orderNumber,
-
-            status: "PENDING",
-
-            subtotal,
-
-            discountAmount,
-
-            deliveryAmount,
-
-            total,
-
-            customerNote,
-
-            shippingAddressId,
-
-            shippingMethod,
-          },
-        });
-
-        // -------------------------------------------------
-        // GROUP CART ITEMS BY SHOP
-        // -------------------------------------------------
-
-        const itemsByShop = new Map<
-          string,
-          typeof cart.items
-        >();
-
-        for (const item of cart.items) {
-          const shopId = item.product.shopId;
-
-          const shopItems =
-            itemsByShop.get(shopId) ?? [];
-
-          shopItems.push(item);
-
-          itemsByShop.set(shopId, shopItems);
-        }
-
-        // -------------------------------------------------
-        // CREATE ORDER SELLERS + ORDER ITEMS
-        // -------------------------------------------------
-
-        for (const [shopId, shopItems] of itemsByShop) {
-          let sellerSubtotal = 0;
-
-          for (const item of shopItems) {
-            const price = item.variant?.price != null
-              ? Number(item.variant.price)
-              : Number(item.product.price);
-
-            sellerSubtotal +=
-              price * item.quantity;
+        for (const item of currentCart.items) {
+          if (
+            !Number.isInteger(item.quantity) ||
+            item.quantity <= 0
+          ) {
+            throw new Error(
+              `INVALID_QUANTITY:${item.id}`
+            );
           }
 
-          const sellerShipping = 0;
+          const product = item.product;
+          const shop = product.shop;
+
+          if (product.status !== "ACTIVE") {
+            throw new Error(
+              `PRODUCT_NOT_ACTIVE:${product.id}`
+            );
+          }
+
+          if (!shop.isActive) {
+            throw new Error(
+              `SHOP_NOT_ACTIVE:${shop.id}`
+            );
+          }
+
+          if (shop.sellerStatus !== "ACTIVE") {
+            throw new Error(
+              `SELLER_NOT_ACTIVE:${shop.id}`
+            );
+          }
+
+          if (item.variantId) {
+            if (!item.variant) {
+              throw new Error(
+                `VARIANT_NOT_FOUND:${item.variantId}`
+              );
+            }
+
+            if (
+              item.variant.productId !==
+              product.id
+            ) {
+              throw new Error(
+                `VARIANT_PRODUCT_MISMATCH:${item.variantId}`
+              );
+            }
+
+            if (!item.variant.isActive) {
+              throw new Error(
+                `VARIANT_NOT_ACTIVE:${item.variantId}`
+              );
+            }
+          }
+        }
+
+        /*
+         * ====================================================
+         * CALCULATE ORDER SUBTOTAL
+         * ====================================================
+         */
+
+        let subtotal =
+          new Prisma.Decimal(0);
+
+        for (const item of currentCart.items) {
+          const price =
+            item.variant?.price ??
+            item.product.price;
+
+          subtotal =
+            subtotal.add(
+              price.mul(item.quantity)
+            );
+        }
+
+        /*
+         * ====================================================
+         * DISCOUNT
+         * ====================================================
+         */
+
+        const discountAmount =
+          new Prisma.Decimal(0);
+
+        /*
+         * ====================================================
+         * DELIVERY
+         * ====================================================
+         */
+
+        const deliveryAmount =
+          new Prisma.Decimal(0);
+
+        /*
+         * ====================================================
+         * ORDER TOTAL
+         * ====================================================
+         */
+
+        const total =
+          subtotal
+            .sub(discountAmount)
+            .add(deliveryAmount);
+
+        /*
+         * ====================================================
+         * ORDER NUMBER
+         * ====================================================
+         */
+
+        const orderNumber =
+          await generateOrderNumber(tx);
+
+        /*
+         * ====================================================
+         * CREATE ORDER
+         * ====================================================
+         */
+
+        const createdOrder =
+          await tx.order.create({
+            data: {
+              userId: user.id,
+
+              orderNumber,
+
+              status: "PENDING",
+
+              subtotal,
+
+              discountAmount,
+
+              deliveryAmount,
+
+              total,
+
+              customerNote,
+
+              shippingAddressId,
+
+              shippingMethod:
+                shippingMethod
+                  ? (shippingMethod as DeliveryMethod)
+                  : null,
+            },
+          });
+
+        /*
+         * ====================================================
+         * GROUP ITEMS BY SHOP
+         * ====================================================
+         */
+
+        const itemsByShop =
+          new Map<
+            string,
+            typeof currentCart.items
+          >();
+
+        for (const item of currentCart.items) {
+          const shopId =
+            item.product.shopId;
+
+          const existing =
+            itemsByShop.get(shopId);
+
+          if (existing) {
+            existing.push(item);
+          } else {
+            itemsByShop.set(
+              shopId,
+              [item]
+            );
+          }
+        }
+
+        /*
+         * ====================================================
+         * CREATE ORDER SELLERS
+         *
+         * Тут фіксуємо:
+         *
+         * subtotal
+         * shipping
+         * total
+         * commissionRate
+         * commissionAmount
+         * sellerAmount
+         *
+         * Комісія рахується від subtotal.
+         * Доставка не входить у базу комісії.
+         * ====================================================
+         */
+
+        for (const [
+          shopId,
+          shopItems,
+        ] of itemsByShop) {
+          let sellerSubtotal =
+            new Prisma.Decimal(0);
+
+          for (const item of shopItems) {
+            const price =
+              item.variant?.price ??
+              item.product.price;
+
+            sellerSubtotal =
+              sellerSubtotal.add(
+                price.mul(item.quantity)
+              );
+          }
+
+          /*
+           * --------------------------------------------------
+           * SHIPPING
+           * --------------------------------------------------
+           *
+           * Поки що доставка = 0.
+           */
+
+          const shipping =
+            new Prisma.Decimal(0);
+
+          /*
+           * --------------------------------------------------
+           * SELLER TOTAL
+           * --------------------------------------------------
+           */
 
           const sellerTotal =
-            sellerSubtotal +
-            sellerShipping;
+            sellerSubtotal.add(
+              shipping
+            );
 
-          // -----------------------------------------------
-          // ORDER SELLER
-          // -----------------------------------------------
+          /*
+           * --------------------------------------------------
+           * COMMISSION
+           * --------------------------------------------------
+           *
+           * calculateCommission() працює з Decimal.
+           */
+
+          const commission =
+            calculateCommission(
+              sellerSubtotal
+            );
+
+          /*
+           * --------------------------------------------------
+           * CREATE ORDER SELLER
+           * --------------------------------------------------
+           */
 
           await tx.orderSeller.create({
             data: {
-              orderId: createdOrder.id,
+              orderId:
+                createdOrder.id,
 
               shopId,
 
-              subtotal: sellerSubtotal,
+              subtotal:
+                sellerSubtotal,
 
-              shipping: sellerShipping,
+              shipping,
 
-              total: sellerTotal,
+              total:
+                sellerTotal,
+
+              commissionRate:
+                commission.rate,
+
+              commissionAmount:
+                commission.amount,
+
+              sellerAmount:
+                commission.sellerAmount,
 
               status: "PENDING",
             },
           });
+        }
 
-          // -----------------------------------------------
-          // ORDER ITEMS
-          // -----------------------------------------------
+        /*
+         * ====================================================
+         * CREATE ORDER ITEMS
+         * + RESERVE STOCK
+         * ====================================================
+         */
 
-          for (const item of shopItems) {
-            const price = item.variant?.price != null
-              ? Number(item.variant.price)
-              : Number(item.product.price);
+        for (const item of currentCart.items) {
+          /*
+           * --------------------------------------------------
+           * PRICE
+           * --------------------------------------------------
+           */
 
-            const itemTotal =
-              price * item.quantity;
+          const price =
+            item.variant?.price ??
+            item.product.price;
 
-            await tx.orderItem.create({
-              data: {
-                orderId: createdOrder.id,
+          const totalPrice =
+            price.mul(item.quantity);
 
-                productId: item.productId,
+          /*
+           * --------------------------------------------------
+           * SKU
+           * --------------------------------------------------
+           */
 
-                variantId: item.variantId,
+          const sku =
+            item.variant?.sku ??
+            item.product.sku ??
+            null;
 
-                shopId,
+          /*
+           * --------------------------------------------------
+           * CREATE ORDER ITEM
+           * --------------------------------------------------
+           */
 
-                productTitle: item.product.title,
+          await tx.orderItem.create({
+            data: {
+              orderId:
+                createdOrder.id,
 
-                sku:
-                  item.variant?.sku ??
-                  item.product.sku ??
-                  null,
+              productId:
+                item.productId,
 
-                quantity: item.quantity,
+              variantId:
+                item.variantId,
 
-                unitPrice: price,
+              shopId:
+                item.product.shopId,
 
-                totalPrice: itemTotal,
-              },
-            });
+              productTitle:
+                item.product.title,
 
-            // ---------------------------------------------
-            // RESERVE STOCK
-            // ---------------------------------------------
+              sku,
 
-            if (item.variantId) {
-              const updatedVariant =
-                await tx.productVariant.updateMany({
-                  where: {
-                    id: item.variantId,
+              quantity:
+                item.quantity,
 
-                    isActive: true,
+              unitPrice:
+                price,
 
-                    stock: {
-                      gte: item.quantity,
-                    },
+              totalPrice,
+            },
+          });
 
-                    reservedStock: {
-                      lte:
-                        item.variant!.stock -
-                        item.quantity,
-                    },
-                  },
+          /*
+           * ==================================================
+           * RESERVE VARIANT STOCK
+           * ==================================================
+           */
 
-                  data: {
-                    reservedStock: {
-                      increment: item.quantity,
-                    },
-                  },
-                });
+          if (item.variantId) {
+            const variant =
+              await tx.productVariant.findUnique({
+                where: {
+                  id: item.variantId,
+                },
+              });
 
-              if (updatedVariant.count !== 1) {
-                throw new Error(
-                  `VARIANT_STOCK_CHANGED:${item.variantId}`
-                );
-              }
-            } else {
-              const updatedProduct =
-                await tx.product.updateMany({
-                  where: {
-                    id: item.productId,
-
-                    status: "ACTIVE",
-
-                    stock: {
-                      gte: item.quantity,
-                    },
-
-                    reservedStock: {
-                      lte:
-                        item.product.stock -
-                        item.quantity,
-                    },
-                  },
-
-                  data: {
-                    reservedStock: {
-                      increment: item.quantity,
-                    },
-                  },
-                });
-
-              if (updatedProduct.count !== 1) {
-                throw new Error(
-                  `STOCK_CHANGED:${item.productId}`
-                );
-              }
+            if (!variant) {
+              throw new Error(
+                `VARIANT_NOT_FOUND:${item.variantId}`
+              );
             }
 
-            // ---------------------------------------------
-            // PRODUCT COUNTERS
-            // ---------------------------------------------
+            if (!variant.isActive) {
+              throw new Error(
+                `VARIANT_NOT_ACTIVE:${item.variantId}`
+              );
+            }
 
-            await tx.product.update({
-              where: {
-                id: item.productId,
-              },
+            if (
+              variant.productId !==
+              item.productId
+            ) {
+              throw new Error(
+                `VARIANT_PRODUCT_MISMATCH:${item.variantId}`
+              );
+            }
 
-              data: {
-                salesCount: {
-                  increment: item.quantity,
+            const available =
+              variant.stock -
+              variant.reservedStock;
+
+            if (
+              available <
+              item.quantity
+            ) {
+              throw new Error(
+                `VARIANT_STOCK_CHANGED:${item.variantId}`
+              );
+            }
+
+            /*
+             * Атомарне резервування.
+             */
+
+            const reserved =
+              await tx.productVariant.updateMany({
+                where: {
+                  id: item.variantId,
+
+                  stock: {
+                    gte:
+                      variant.reservedStock +
+                      item.quantity,
+                  },
+
+                  reservedStock: {
+                    gte: 0,
+                  },
                 },
-              },
-            });
+
+                data: {
+                  reservedStock: {
+                    increment:
+                      item.quantity,
+                  },
+                },
+              });
+
+            if (reserved.count !== 1) {
+              throw new Error(
+                `VARIANT_STOCK_CHANGED:${item.variantId}`
+              );
+            }
+          } else {
+            /*
+             * =================================================
+             * RESERVE PRODUCT STOCK
+             * =================================================
+             */
+
+            const product =
+              await tx.product.findUnique({
+                where: {
+                  id: item.productId,
+                },
+
+                include: {
+                  shop: true,
+                },
+              });
+
+            if (!product) {
+              throw new Error(
+                `PRODUCT_NOT_FOUND:${item.productId}`
+              );
+            }
+
+            if (product.status !== "ACTIVE") {
+              throw new Error(
+                `PRODUCT_NOT_ACTIVE:${item.productId}`
+              );
+            }
+
+            if (!product.shop.isActive) {
+              throw new Error(
+                `SHOP_NOT_ACTIVE:${product.shopId}`
+              );
+            }
+
+            if (
+              product.shop.sellerStatus !==
+              "ACTIVE"
+            ) {
+              throw new Error(
+                `SELLER_NOT_ACTIVE:${product.shopId}`
+              );
+            }
+
+            const available =
+              product.stock -
+              product.reservedStock;
+
+            if (
+              available <
+              item.quantity
+            ) {
+              throw new Error(
+                `PRODUCT_STOCK_CHANGED:${item.productId}`
+              );
+            }
+
+            /*
+             * Атомарне резервування.
+             */
+
+            const reserved =
+              await tx.product.updateMany({
+                where: {
+                  id: item.productId,
+
+                  stock: {
+                    gte:
+                      product.reservedStock +
+                      item.quantity,
+                  },
+
+                  reservedStock: {
+                    gte: 0,
+                  },
+                },
+
+                data: {
+                  reservedStock: {
+                    increment:
+                      item.quantity,
+                  },
+                },
+              });
+
+            if (reserved.count !== 1) {
+              throw new Error(
+                `PRODUCT_STOCK_CHANGED:${item.productId}`
+              );
+            }
           }
+        }
 
-          // ---------------------------------------------
-          // SHOP COUNTERS
-          // ---------------------------------------------
+        /*
+         * ====================================================
+         * SHOP ORDERS COUNT
+         * ====================================================
+         *
+         * Один OrderSeller = одне замовлення продавця.
+         *
+         * ordersCount збільшуємо один раз на магазин.
+         *
+         * salesCount тут НЕ змінюємо.
+         * ====================================================
+         */
 
+        for (const [
+          shopId,
+        ] of itemsByShop) {
           await tx.shop.update({
             where: {
               id: shopId,
@@ -712,21 +1143,26 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // -------------------------------------------------
-        // CLEAR CART
-        // -------------------------------------------------
+        /*
+         * ====================================================
+         * CLEAR CART
+         * ====================================================
+         */
 
         await tx.cartItem.deleteMany({
           where: {
-            cartId: cart.id,
+            cartId:
+              currentCart.id,
           },
         });
 
-        // -------------------------------------------------
-        // RETURN COMPLETE ORDER
-        // -------------------------------------------------
+        /*
+         * ====================================================
+         * RETURN CREATED ORDER
+         * ====================================================
+         */
 
-        return tx.order.findUniqueOrThrow({
+        return tx.order.findUnique({
           where: {
             id: createdOrder.id,
           },
@@ -736,36 +1172,104 @@ export async function POST(request: NextRequest) {
       }
     );
 
-    // ===================================================
-    // SUCCESS
-    // ===================================================
+    /*
+     * ========================================================
+     * ORDER NOT FOUND
+     * ========================================================
+     */
+
+    if (!order) {
+      return NextResponse.json(
+        {
+          error:
+            "Failed to create order",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
+    /*
+     * ========================================================
+     * SUCCESS
+     * ========================================================
+     */
 
     return NextResponse.json(
       {
-        success: true,
-        message: "Замовлення успішно створено",
-        data: order,
+        ok: true,
+        order,
       },
       {
         status: 201,
       }
     );
   } catch (error) {
-    console.error("POST /api/orders error:", error);
+    console.error(
+      "[ORDERS_POST_ERROR]",
+      error
+    );
 
-    // ===================================================
-    // STOCK CHANGED
-    // ===================================================
+    const message =
+      error instanceof Error
+        ? error.message
+        : "UNKNOWN_ERROR";
+
+    /*
+     * ========================================================
+     * CART EMPTY
+     * ========================================================
+     */
+
+    if (message === "CART_EMPTY") {
+      return NextResponse.json(
+        {
+          error: "Cart is empty",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    /*
+     * ========================================================
+     * INVALID QUANTITY
+     * ========================================================
+     */
 
     if (
-      error instanceof Error &&
-      error.message.startsWith("STOCK_CHANGED:")
+      message.startsWith(
+        "INVALID_QUANTITY:"
+      )
     ) {
       return NextResponse.json(
         {
-          success: false,
           error:
-            "Залишок товару змінився. Оновіть кошик і спробуйте ще раз.",
+            "У кошику виявлена некоректна кількість товару.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    /*
+     * ========================================================
+     * STOCK CHANGED
+     * ========================================================
+     */
+
+    if (
+      message.startsWith(
+        "PRODUCT_STOCK_CHANGED:"
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Кількість товару змінилася. Оновіть кошик і спробуйте ще раз.",
         },
         {
           status: 409,
@@ -773,19 +1277,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ===================================================
-    // VARIANT STOCK CHANGED
-    // ===================================================
-
     if (
-      error instanceof Error &&
-      error.message.startsWith("VARIANT_STOCK_CHANGED:")
+      message.startsWith(
+        "VARIANT_STOCK_CHANGED:"
+      )
     ) {
       return NextResponse.json(
         {
-          success: false,
           error:
-            "Залишок вибраного варіанту змінився. Оновіть кошик і спробуйте ще раз.",
+            "Кількість вибраного варіанту змінилася. Оновіть кошик і спробуйте ще раз.",
         },
         {
           status: 409,
@@ -793,21 +1293,120 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ===================================================
-    // PRISMA UNIQUE
-    // ===================================================
+    /*
+     * ========================================================
+     * PRODUCT / VARIANT / SHOP STATUS
+     * ========================================================
+     */
 
     if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
+      message.startsWith(
+        "PRODUCT_NOT_ACTIVE:"
+      ) ||
+      message.startsWith(
+        "VARIANT_NOT_ACTIVE:"
+      ) ||
+      message.startsWith(
+        "SHOP_NOT_ACTIVE:"
+      ) ||
+      message.startsWith(
+        "SELLER_NOT_ACTIVE:"
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Один із товарів більше недоступний для замовлення.",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    /*
+     * ========================================================
+     * NOT FOUND
+     * ========================================================
+     */
+
+    if (
+      message.startsWith(
+        "VARIANT_NOT_FOUND:"
+      ) ||
+      message.startsWith(
+        "PRODUCT_NOT_FOUND:"
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Один із товарів більше не існує.",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    /*
+     * ========================================================
+     * VARIANT MISMATCH
+     * ========================================================
+     */
+
+    if (
+      message.startsWith(
+        "VARIANT_PRODUCT_MISMATCH:"
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Невірний варіант товару.",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    /*
+     * ========================================================
+     * ORDER NUMBER
+     * ========================================================
+     */
+
+    if (
+      message ===
+      "ORDER_NUMBER_GENERATION_FAILED"
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Не вдалося згенерувати номер замовлення. Спробуйте ще раз.",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
+    /*
+     * ========================================================
+     * PRISMA UNIQUE
+     * ========================================================
+     */
+
+    if (
+      error instanceof
+        Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
       return NextResponse.json(
         {
-          success: false,
           error:
-            "Замовлення з таким номером вже існує. Спробуйте ще раз.",
+            "Не вдалося створити унікальний номер замовлення. Спробуйте ще раз.",
         },
         {
           status: 409,
@@ -815,18 +1414,92 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ===================================================
-    // DEFAULT ERROR
-    // ===================================================
+    /*
+     * ========================================================
+     * DEFAULT ERROR
+     * ========================================================
+     */
 
     return NextResponse.json(
       {
-        success: false,
-        error: "Не вдалося створити замовлення",
+        error:
+          "Не вдалося створити замовлення",
       },
       {
         status: 500,
       }
     );
   }
+}
+
+/*
+ * ============================================================
+ * GENERATE ORDER NUMBER
+ * ============================================================
+ */
+
+async function generateOrderNumber(
+  tx: Prisma.TransactionClient
+): Promise<string> {
+  const date = new Date();
+
+  const year =
+    date.getFullYear();
+
+  const month =
+    String(
+      date.getMonth() + 1
+    ).padStart(2, "0");
+
+  const day =
+    String(
+      date.getDate()
+    ).padStart(2, "0");
+
+  const characters =
+    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  for (
+    let attempt = 0;
+    attempt < 10;
+    attempt++
+  ) {
+    let suffix = "";
+
+    for (
+      let i = 0;
+      i < 6;
+      i++
+    ) {
+      suffix +=
+        characters[
+          Math.floor(
+            Math.random() *
+              characters.length
+          )
+        ];
+    }
+
+    const orderNumber =
+      `UTH-${year}${month}${day}-${suffix}`;
+
+    const exists =
+      await tx.order.findUnique({
+        where: {
+          orderNumber,
+        },
+
+        select: {
+          id: true,
+        },
+      });
+
+    if (!exists) {
+      return orderNumber;
+    }
+  }
+
+  throw new Error(
+    "ORDER_NUMBER_GENERATION_FAILED"
+  );
 }

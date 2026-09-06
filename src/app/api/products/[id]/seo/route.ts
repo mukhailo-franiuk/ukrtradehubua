@@ -1,5 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
+
+async function assertCanManageProduct(productId: string) {
+  const user = await getCurrentUser();
+
+  if (!user) {
+    return { user: null, allowed: false };
+  }
+
+  if (user.role === "ADMIN") {
+    return { user, allowed: true };
+  }
+
+  if (user.role !== "SELLER") {
+    return { user, allowed: false };
+  }
+
+  const product = await db.product.findUnique({
+    where: { id: productId },
+    select: { shop: { select: { userId: true } } },
+  });
+
+  if (!product || product.shop.userId !== user.id) {
+    return { user, allowed: false };
+  }
+
+  return { user, allowed: true };
+}
 
 type RouteContext = {
   params: Promise<{
@@ -94,6 +122,22 @@ export async function POST(
 ) {
   try {
     const { id } = await context.params;
+
+    const access = await assertCanManageProduct(id);
+
+    if (!access.user) {
+      return NextResponse.json(
+        { success: false, error: "Необхідна авторизація" },
+        { status: 401 }
+      );
+    }
+
+    if (!access.allowed) {
+      return NextResponse.json(
+        { success: false, error: "Доступ заборонено" },
+        { status: 403 }
+      );
+    }
 
     if (!id) {
       return NextResponse.json(
@@ -198,6 +242,22 @@ export async function PUT(
 ) {
   try {
     const { id } = await context.params;
+
+    const access = await assertCanManageProduct(id);
+
+    if (!access.user) {
+      return NextResponse.json(
+        { success: false, error: "Необхідна авторизація" },
+        { status: 401 }
+      );
+    }
+
+    if (!access.allowed) {
+      return NextResponse.json(
+        { success: false, error: "Доступ заборонено" },
+        { status: 403 }
+      );
+    }
 
     if (!id) {
       return NextResponse.json(
@@ -333,6 +393,22 @@ export async function DELETE(
 ) {
   try {
     const { id } = await context.params;
+
+    const access = await assertCanManageProduct(id);
+
+    if (!access.user) {
+      return NextResponse.json(
+        { success: false, error: "Необхідна авторизація" },
+        { status: 401 }
+      );
+    }
+
+    if (!access.allowed) {
+      return NextResponse.json(
+        { success: false, error: "Доступ заборонено" },
+        { status: 403 }
+      );
+    }
 
     if (!id) {
       return NextResponse.json(

@@ -1,6 +1,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getAdmin } from "@/lib/auth";
 
 type RouteContext = {
   params: Promise<{
@@ -17,6 +18,18 @@ export async function GET(
   { params }: RouteContext
 ) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const { id } = await params;
 
     const category = await db.category.findUnique({
@@ -101,6 +114,18 @@ export async function PATCH(
   { params }: RouteContext
 ) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const { id } = await params;
 
     const body = await request.json();
@@ -407,6 +432,18 @@ export async function DELETE(
   { params }: RouteContext
 ) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const { id } = await params;
 
     const category =

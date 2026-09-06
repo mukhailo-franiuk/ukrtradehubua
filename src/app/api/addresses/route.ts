@@ -1,79 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
 
-// =====================================================
-// TYPES
-// =====================================================
+const ADDRESS_TYPES = ["SHIPPING", "BILLING", "BOTH"] as const;
 
-type AddressType = "SHIPPING" | "BILLING" | "BOTH";
+type AddressType = (typeof ADDRESS_TYPES)[number];
 
-type CreateAddressBody = {
-  type?: AddressType;
+function isAddressType(value: unknown): value is AddressType {
+  return (
+    typeof value === "string" &&
+    ADDRESS_TYPES.includes(value as AddressType)
+  );
+}
 
-  title?: string | null;
-  firstName?: string | null;
-  lastName?: string | null;
-  phone?: string | null;
+function normalizeNullable(value: unknown): string | null {
+  if (typeof value !== "string") return null;
 
-  country?: string | null;
-  region?: string | null;
-  city?: string | null;
-  postalCode?: string | null;
-  street?: string | null;
-  building?: string | null;
-  apartment?: string | null;
+  const trimmed = value.trim();
 
-  novaPoshtaWarehouse?: string | null;
-  novaPoshtaRef?: string | null;
+  return trimmed.length > 0 ? trimmed : null;
+}
 
-  isDefault?: boolean;
-};
-
-// =====================================================
-// AUTH
-// =====================================================
-
-async function getCurrentUser(request: NextRequest) {
-  const token = request.cookies.get("session_token")?.value;
-
-  if (!token) {
-    return null;
-  }
-
-  const session = await db.session.findUnique({
-    where: {
-      token,
-    },
-    include: {
-      user: true,
-    },
-  });
-
-  if (!session) {
-    return null;
-  }
-
-  if (session.expiresAt <= new Date()) {
-    return null;
-  }
-
-  if (
-    session.user.isBlocked ||
-    session.user.status !== "ACTIVE"
-  ) {
-    return null;
-  }
-
-  return session.user;
+function serializeAddress(address: any) {
+  return {
+    id: address.id,
+    userId: address.userId,
+    type: address.type,
+    title: address.title,
+    firstName: address.firstName,
+    lastName: address.lastName,
+    phone: address.phone,
+    country: address.country,
+    region: address.region,
+    city: address.city,
+    postalCode: address.postalCode,
+    street: address.street,
+    building: address.building,
+    apartment: address.apartment,
+    novaPoshtaWarehouse: address.novaPoshtaWarehouse,
+    novaPoshtaRef: address.novaPoshtaRef,
+    isDefault: address.isDefault,
+    createdAt: address.createdAt,
+    updatedAt: address.updatedAt,
+  };
 }
 
 // =====================================================
 // GET /api/addresses
 // =====================================================
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    const user = await getCurrentUser(request);
+    const user = await getCurrentUser();
 
     if (!user) {
       return NextResponse.json(
@@ -101,19 +79,15 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      data: addresses,
-      total: addresses.length,
+      data: addresses.map(serializeAddress),
     });
   } catch (error) {
-    console.error(
-      "GET /api/addresses error:",
-      error
-    );
+    console.error("GET /api/addresses error:", error);
 
     return NextResponse.json(
       {
         success: false,
-        error: "Не вдалося отримати адреси",
+        error: "Не вдалося завантажити адреси",
       },
       { status: 500 }
     );
@@ -126,7 +100,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const user = await getCurrentUser(request);
+    const user = await getCurrentUser();
 
     if (!user) {
       return NextResponse.json(
@@ -138,191 +112,100 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let body: CreateAddressBody;
+    const body = await request.json();
 
-    try {
-      body = (await request.json()) as CreateAddressBody;
-    } catch {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Некоректний JSON",
-        },
-        { status: 400 }
-      );
-    }
+    const type: AddressType = isAddressType(body.type)
+      ? body.type
+      : "SHIPPING";
 
-    // =================================================
-    // NORMALIZE
-    // =================================================
-
-    const type = body.type ?? "SHIPPING";
-
-    const title =
-      body.title?.trim() || null;
-
-    const firstName =
-      body.firstName?.trim() || null;
-
-    const lastName =
-      body.lastName?.trim() || null;
-
-    const phone =
-      body.phone?.trim() || null;
-
-    const country =
-      body.country?.trim() || "Україна";
-
-    const region =
-      body.region?.trim() || null;
-
-    const city =
-      body.city?.trim() || null;
-
-    const postalCode =
-      body.postalCode?.trim() || null;
-
-    const street =
-      body.street?.trim() || null;
-
-    const building =
-      body.building?.trim() || null;
-
-    const apartment =
-      body.apartment?.trim() || null;
-
-    const novaPoshtaWarehouse =
-      body.novaPoshtaWarehouse?.trim() || null;
-
-    const novaPoshtaRef =
-      body.novaPoshtaRef?.trim() || null;
-
-    const isDefault =
-      body.isDefault === true;
-
-    // =================================================
-    // VALIDATE TYPE
-    // =================================================
-
-    const allowedTypes: AddressType[] = [
-      "SHIPPING",
-      "BILLING",
-      "BOTH",
-    ];
-
-    if (
-      !allowedTypes.includes(type)
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Некоректний тип адреси",
-        },
-        { status: 400 }
-      );
-    }
-
-    // =================================================
-    // VALIDATE BASIC ADDRESS
-    // =================================================
+    const city = normalizeNullable(body.city);
 
     if (!city) {
       return NextResponse.json(
         {
           success: false,
-          error: "Місто є обов'язковим",
+          error: "Вкажіть місто",
         },
         { status: 400 }
       );
     }
 
-    // =================================================
-    // CREATE
-    // =================================================
+    const requestedDefault = Boolean(body.isDefault);
 
-    const address = await db.$transaction(
-      async (tx) => {
-        // Якщо користувач створює першу адресу —
-        // автоматично робимо її основною
-        const addressesCount =
-          await tx.address.count({
-            where: {
-              userId: user.id,
-            },
-          });
+    const existingCount = await db.address.count({
+      where: {
+        userId: user.id,
+      },
+    });
 
-        const shouldBeDefault =
-          isDefault ||
-          addressesCount === 0;
+    // Перша адреса автоматично стає основною.
+    const shouldBeDefault =
+      existingCount === 0 || requestedDefault;
 
-        // =================================================
-        // RESET DEFAULT
-        // =================================================
-
-        if (shouldBeDefault) {
-          await tx.address.updateMany({
-            where: {
-              userId: user.id,
-              isDefault: true,
-            },
-            data: {
-              isDefault: false,
-            },
-          });
-        }
-
-        // =================================================
-        // CREATE ADDRESS
-        // =================================================
-
-        return tx.address.create({
-          data: {
+    const address = await db.$transaction(async (tx) => {
+      if (shouldBeDefault) {
+        await tx.address.updateMany({
+          where: {
             userId: user.id,
-
-            type,
-
-            title,
-            firstName,
-            lastName,
-            phone,
-
-            country,
-            region,
-            city,
-            postalCode,
-            street,
-            building,
-            apartment,
-
-            novaPoshtaWarehouse,
-            novaPoshtaRef,
-
-            isDefault: shouldBeDefault,
+            isDefault: true,
+          },
+          data: {
+            isDefault: false,
           },
         });
       }
-    );
+
+      return tx.address.create({
+        data: {
+          userId: user.id,
+
+          type,
+
+          title: normalizeNullable(body.title),
+
+          firstName: normalizeNullable(body.firstName),
+          lastName: normalizeNullable(body.lastName),
+          phone: normalizeNullable(body.phone),
+
+          country:
+            normalizeNullable(body.country) ?? "Україна",
+
+          region: normalizeNullable(body.region),
+          city,
+
+          postalCode: normalizeNullable(body.postalCode),
+
+          street: normalizeNullable(body.street),
+          building: normalizeNullable(body.building),
+          apartment: normalizeNullable(body.apartment),
+
+          novaPoshtaWarehouse: normalizeNullable(
+            body.novaPoshtaWarehouse
+          ),
+
+          novaPoshtaRef: normalizeNullable(
+            body.novaPoshtaRef
+          ),
+
+          isDefault: shouldBeDefault,
+        },
+      });
+    });
 
     return NextResponse.json(
       {
         success: true,
-        message: "Адресу успішно створено",
-        data: address,
+        data: serializeAddress(address),
       },
-      {
-        status: 201,
-      }
+      { status: 201 }
     );
   } catch (error) {
-    console.error(
-      "POST /api/addresses error:",
-      error
-    );
+    console.error("POST /api/addresses error:", error);
 
     return NextResponse.json(
       {
         success: false,
-        error: "Не вдалося створити адресу",
+        error: "Не вдалося зберегти адресу",
       },
       { status: 500 }
     );

@@ -1,236 +1,158 @@
-
 import { NextRequest, NextResponse } from "next/server";
+import { PaymentMethod, PaymentStatus } from "@prisma/client";
+
 import { db } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
+import { createMonoInvoice } from "@/lib/payments/monobank";
 
-type PaymentMethod =
-  | "CARD"
-  | "CASH_ON_DELIVERY"
-  | "BANK_TRANSFER"
-  | "APPLE_PAY"
-  | "GOOGLE_PAY";
+export const runtime = "nodejs";
 
-type PaymentStatus =
-  | "PENDING"
-  | "PROCESSING"
-  | "PAID"
-  | "FAILED"
-  | "REFUNDED"
-  | "PARTIALLY_REFUNDED"
-  | "CANCELLED";
+const ONLINE_METHODS = [
+  PaymentMethod.CARD,
+  PaymentMethod.APPLE_PAY,
+  PaymentMethod.GOOGLE_PAY,
+] as const;
 
-type CreatePaymentBody = {
-  orderId?: string;
-  method?: PaymentMethod;
-};
+const LOCAL_METHODS = [
+  PaymentMethod.CASH_ON_DELIVERY,
+  PaymentMethod.BANK_TRANSFER,
+] as const;
 
-async function getCurrentUser(request: NextRequest) {
-  const token = request.cookies.get("session_token")?.value;
-
-  if (!token) {
-    return null;
-  }
-
-  const session = await db.session.findUnique({
-    where: {
-      token,
-    },
-    include: {
-      user: true,
-    },
-  });
-
-  if (!session) {
-    return null;
-  }
-
-  if (session.expiresAt <= new Date()) {
-    return null;
-  }
-
-  if (
-    session.user.isBlocked ||
-    session.user.status !== "ACTIVE"
-  ) {
-    return null;
-  }
-
-  return session.user;
+function isOnlineMethod(method: PaymentMethod): boolean {
+  return ONLINE_METHODS.includes(
+    method as (typeof ONLINE_METHODS)[number],
+  );
 }
 
-const paymentInclude = {
-  order: {
-    select: {
-      id: true,
-      orderNumber: true,
-      status: true,
-      subtotal: true,
-      discountAmount: true,
-      deliveryAmount: true,
-      total: true,
-      customerNote: true,
-      shippingAddressId: true,
-      shippingMethod: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  },
-} as const;
+function isLocalMethod(method: PaymentMethod): boolean {
+  return LOCAL_METHODS.includes(
+    method as (typeof LOCAL_METHODS)[number],
+  );
+}
 
-export async function GET(request: NextRequest) {
-  try {
-    const user = await getCurrentUser(request);
+function isPaymentMethod(value: unknown): value is PaymentMethod {
+  return (
+    typeof value === "string" &&
+    Object.values(PaymentMethod).includes(value as PaymentMethod)
+  );
+}
 
-    if (!user) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Необхідна авторизація",
-        },
-        { status: 401 }
-      );
-    }
+function getAppUrl(): string {
+  const value = process.env.NEXT_PUBLIC_APP_URL?.trim();
 
-    const { searchParams } = new URL(request.url);
-
-    const orderId =
-      searchParams.get("orderId")?.trim() || undefined;
-
-    const statusParam =
-      searchParams.get("status")?.trim() || undefined;
-
-    const allowedStatuses: PaymentStatus[] = [
-      "PENDING",
-      "PROCESSING",
-      "PAID",
-      "FAILED",
-      "REFUNDED",
-      "PARTIALLY_REFUNDED",
-      "CANCELLED",
-    ];
-
-    let status: PaymentStatus | undefined;
-
-    if (statusParam) {
-      if (
-        !allowedStatuses.includes(
-          statusParam as PaymentStatus
-        )
-      ) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: "Некоректний статус платежу",
-          },
-          { status: 400 }
-        );
-      }
-
-      status = statusParam as PaymentStatus;
-    }
-
-    const payments = await db.payment.findMany({
-      where: {
-        userId: user.id,
-
-        ...(orderId
-          ? {
-              orderId,
-            }
-          : {}),
-
-        ...(status
-          ? {
-              status,
-            }
-          : {}),
-      },
-
-      orderBy: {
-        createdAt: "desc",
-      },
-
-      include: paymentInclude,
-    });
-
-    return NextResponse.json({
-      success: true,
-      data: payments,
-      total: payments.length,
-    });
-  } catch (error) {
-    console.error("GET /api/payments error:", error);
-
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Не вдалося отримати платежі",
-      },
-      { status: 500 }
-    );
+  if (!value) {
+    throw new Error("NEXT_PUBLIC_APP_URL is not configured");
   }
+
+  return value.replace(/\/+$/, "");
+}
+
+/**
+ * Decimal / number / string -> Monobank minor units.
+ *
+ * Example:
+ * 1299.99 UAH -> 129999
+ */
+function toMinorUnits(value: unknown): number {
+  const amount = Number(value);
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("Некоректна сума оплати");
+  }
+
+  const minor = Math.round(amount * 100);
+
+  if (!Number.isSafeInteger(minor) || minor <= 0) {
+    throw new Error("Сума оплати занадто велика");
+  }
+
+  return minor;
+}
+
+function jsonError(
+  error: string,
+  status: number,
+  extra?: Record<string, unknown>,
+) {
+  return NextResponse.json(
+    {
+      success: false,
+      error,
+      ...extra,
+    },
+    { status },
+  );
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const user = await getCurrentUser(request);
+    /*
+     * =====================================================
+     * 1. AUTH
+     * =====================================================
+     */
+
+    const user = await getCurrentUser();
 
     if (!user) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Необхідна авторизація",
-        },
-        { status: 401 }
-      );
+      return jsonError("Необхідна авторизація", 401);
     }
 
-    let body: CreatePaymentBody;
+    /*
+     * =====================================================
+     * 2. BODY
+     * =====================================================
+     */
+
+    let body: {
+      orderId?: unknown;
+      method?: unknown;
+    };
 
     try {
-      body = (await request.json()) as CreatePaymentBody;
+      body = (await request.json()) as {
+        orderId?: unknown;
+        method?: unknown;
+      };
     } catch {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Некоректний JSON",
-        },
-        { status: 400 }
-      );
+      return jsonError("Некоректне тіло запиту", 400);
     }
 
-    const orderId = body.orderId?.trim();
-    const method = body.method;
+    const orderId =
+      typeof body.orderId === "string"
+        ? body.orderId.trim()
+        : "";
+
+    const methodValue =
+      typeof body.method === "string"
+        ? body.method.trim()
+        : "";
 
     if (!orderId) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "orderId є обов'язковим",
-        },
-        { status: 400 }
+      return jsonError("ID замовлення не вказано", 400);
+    }
+
+    if (!methodValue) {
+      return jsonError("Спосіб оплати не вказано", 400);
+    }
+
+    if (!isPaymentMethod(methodValue)) {
+      return jsonError(
+        "Непідтримуваний спосіб оплати",
+        400,
       );
     }
 
-    const allowedMethods: PaymentMethod[] = [
-      "CARD",
-      "CASH_ON_DELIVERY",
-      "BANK_TRANSFER",
-      "APPLE_PAY",
-      "GOOGLE_PAY",
-    ];
+    const method = methodValue;
 
-    if (
-      !method ||
-      !allowedMethods.includes(method)
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Некоректний метод оплати",
-        },
-        { status: 400 }
-      );
-    }
+    /*
+     * =====================================================
+     * 3. LOAD ORDER
+     * =====================================================
+     *
+     * userId обов'язковий, щоб користувач не міг
+     * оплатити чуже замовлення.
+     */
 
     const order = await db.order.findFirst({
       where: {
@@ -238,68 +160,320 @@ export async function POST(request: NextRequest) {
         userId: user.id,
       },
 
-      select: {
-        id: true,
-        status: true,
-        total: true,
+      include: {
+        items: {
+          orderBy: {
+            createdAt: "asc",
+          },
+        },
+
+        payments: {
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
       },
     });
 
     if (!order) {
-      return NextResponse.json(
+      return jsonError("Замовлення не знайдено", 404);
+    }
+
+    /*
+     * =====================================================
+     * 4. ORDER STATUS
+     * =====================================================
+     */
+
+    if (order.status !== "PENDING") {
+      return jsonError(
+        "Для цього замовлення оплату виконати неможливо",
+        400,
         {
-          success: false,
-          error: "Замовлення не знайдено",
+          orderStatus: order.status,
         },
-        { status: 404 }
       );
     }
 
-    if (
-      order.status === "CANCELLED" ||
-      order.status === "RETURNED" ||
-      order.status === "REFUNDED"
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Для цього замовлення неможливо створити платіж",
-        },
-        { status: 409 }
+    /*
+     * =====================================================
+     * 5. ORDER ITEMS
+     * =====================================================
+     */
+
+    if (order.items.length === 0) {
+      return jsonError(
+        "Замовлення не містить товарів",
+        400,
       );
     }
 
-    const existingPayment =
-      await db.payment.findFirst({
-        where: {
-          orderId: order.id,
-          userId: user.id,
-          status: {
-            in: [
-              "PENDING",
-              "PROCESSING",
-              "PAID",
-            ],
+    /*
+     * =====================================================
+     * 6. ALREADY PAID
+     * =====================================================
+     */
+
+    const paidPayment = order.payments.find(
+      (payment) =>
+        payment.status === PaymentStatus.PAID,
+    );
+
+    if (paidPayment) {
+      return jsonError(
+        "Замовлення вже оплачено",
+        409,
+        {
+          paymentId: paidPayment.id,
+        },
+      );
+    }
+
+    /*
+     * =====================================================
+     * 7. LOCAL PAYMENT
+     * =====================================================
+     *
+     * CASH_ON_DELIVERY
+     * BANK_TRANSFER
+     *
+     * Ці способи не потребують Monobank token.
+     */
+
+    if (isLocalMethod(method)) {
+      /*
+       * Якщо вже існує активний payment такого способу,
+       * повертаємо його замість створення дубліката.
+       */
+
+      const existingLocalPayment =
+        order.payments.find(
+          (payment) =>
+            payment.method === method &&
+            (
+              payment.status ===
+                PaymentStatus.PENDING ||
+              payment.status ===
+                PaymentStatus.PROCESSING
+            ),
+        );
+
+      if (existingLocalPayment) {
+        return NextResponse.json({
+          success: true,
+
+          payment: {
+            id: existingLocalPayment.id,
+            status: existingLocalPayment.status,
+            method: existingLocalPayment.method,
+            amount: existingLocalPayment.amount,
+            provider: existingLocalPayment.provider,
+            transactionId:
+              existingLocalPayment.transactionId,
           },
-        },
 
-        orderBy: {
-          createdAt: "desc",
+          redirect: false,
+          paymentUrl: null,
+        });
+      }
+
+      /*
+       * Створюємо локальний payment.
+       */
+
+      const payment = await db.payment.create({
+        data: {
+          userId: user.id,
+          orderId: order.id,
+          amount: order.total,
+          method,
+          status: PaymentStatus.PENDING,
+          provider: null,
+          transactionId: null,
         },
       });
 
-    if (existingPayment) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Для цього замовлення вже існує активний платіж",
-          data: existingPayment,
+      return NextResponse.json({
+        success: true,
+
+        payment: {
+          id: payment.id,
+          status: payment.status,
+          method: payment.method,
+          amount: payment.amount,
+          provider: payment.provider,
+          transactionId:
+            payment.transactionId,
         },
-        { status: 409 }
+
+        redirect: false,
+        paymentUrl: null,
+      });
+    }
+
+    /*
+     * =====================================================
+     * 8. ONLINE PAYMENT
+     * =====================================================
+     *
+     * CARD
+     * APPLE_PAY
+     * GOOGLE_PAY
+     *
+     * На цьому етапі потрібен Monobank.
+     */
+
+    if (!isOnlineMethod(method)) {
+      return jsonError(
+        "Цей спосіб оплати не підтримується",
+        400,
       );
     }
+
+    /*
+     * =====================================================
+     * 9. CHECK MONOBANK TOKEN
+     * =====================================================
+     *
+     * КРИТИЧНО:
+     *
+     * Не можна передавати:
+     *
+     * MONO_TOKEN="ТУТ_ТОКЕН_MONOBANK"
+     *
+     * у HTTP header.
+     *
+     * Кирилиця викликає:
+     *
+     * Cannot convert argument to a ByteString
+     *
+     * Тому перевіряємо token ДО будь-якого виклику
+     * createMonoInvoice().
+     */
+
+    const monoToken = process.env.MONO_TOKEN?.trim();
+
+    if (!monoToken) {
+      return jsonError(
+        "Онлайн-оплата Monobank наразі недоступна. MONO_TOKEN ще не налаштований.",
+        503,
+      );
+    }
+
+    /*
+     * Додаткова перевірка на випадок, якщо в .env
+     * випадково залишили placeholder.
+     */
+
+    const invalidMonoTokens = [
+      "ТУТ_ТОКЕН_MONOBANK",
+      "YOUR_MONO_TOKEN",
+      "YOUR_MONOBANK_TOKEN",
+      "MONO_TOKEN",
+      "CHANGE_ME",
+    ];
+
+    if (
+      invalidMonoTokens.includes(monoToken)
+    ) {
+      return jsonError(
+        "Онлайн-оплата Monobank ще не налаштована. Вкажіть реальний MONO_TOKEN.",
+        503,
+      );
+    }
+
+    /*
+     * =====================================================
+     * 10. EXISTING MONOBANK PAYMENT
+     * =====================================================
+     */
+
+    const existingMonoPayment =
+      order.payments.find(
+        (payment) =>
+          payment.provider === "MONOBANK" &&
+          (
+            payment.status ===
+              PaymentStatus.PENDING ||
+            payment.status ===
+              PaymentStatus.PROCESSING
+          ) &&
+          !!payment.transactionId,
+      );
+
+    if (existingMonoPayment) {
+      return NextResponse.json({
+        success: true,
+
+        payment: {
+          id: existingMonoPayment.id,
+          status: existingMonoPayment.status,
+          method: existingMonoPayment.method,
+          amount: existingMonoPayment.amount,
+          provider: existingMonoPayment.provider,
+          transactionId:
+            existingMonoPayment.transactionId,
+        },
+
+        redirect: false,
+        paymentUrl: null,
+
+        existingInvoice: true,
+      });
+    }
+
+    /*
+     * =====================================================
+     * 11. CANCEL OLD MONOBANK PAYMENTS
+     * =====================================================
+     */
+
+    await db.payment.updateMany({
+      where: {
+        orderId: order.id,
+        provider: "MONOBANK",
+        status: {
+          in: [
+            PaymentStatus.PENDING,
+            PaymentStatus.PROCESSING,
+          ],
+        },
+        transactionId: null,
+      },
+
+      data: {
+        status: PaymentStatus.CANCELLED,
+      },
+    });
+
+    /*
+     * =====================================================
+     * 12. AMOUNT
+     * =====================================================
+     */
+
+    const amountMinor =
+      toMinorUnits(order.total);
+
+    /*
+     * =====================================================
+     * 13. URLS
+     * =====================================================
+     */
+
+    const appUrl = getAppUrl();
+
+    const redirectUrl =
+      `${appUrl}/orders/${order.id}`;
+
+    const webHookUrl =
+      `${appUrl}/api/payments/webhook/monobank`;
+
+    /*
+     * =====================================================
+     * 14. CREATE PAYMENT
+     * =====================================================
+     */
 
     const payment = await db.payment.create({
       data: {
@@ -307,30 +481,173 @@ export async function POST(request: NextRequest) {
         orderId: order.id,
         amount: order.total,
         method,
-        status: "PENDING",
+        status: PaymentStatus.PENDING,
+        provider: "MONOBANK",
+        transactionId: null,
       },
-
-      include: paymentInclude,
     });
 
-    return NextResponse.json(
-      {
-        success: true,
-        message: "Платіж успішно створено",
-        data: payment,
-      },
-      { status: 201 }
-    );
-  } catch (error) {
-    console.error("POST /api/payments error:", error);
+    /*
+     * =====================================================
+     * 15. MONOBANK BASKET
+     * =====================================================
+     */
 
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Не вдалося створити платіж",
+    const basketOrder = order.items.map(
+      (item) => {
+        const unitPrice =
+          toMinorUnits(item.unitPrice);
+
+        const total =
+          unitPrice * item.quantity;
+
+        if (
+          !Number.isSafeInteger(total) ||
+          total <= 0
+        ) {
+          throw new Error(
+            `Некоректна сума товару: ${item.id}`,
+          );
+        }
+
+        return {
+          name: item.productTitle,
+          qty: item.quantity,
+          sum: unitPrice,
+          total,
+
+          ...(item.sku
+            ? {
+                code: item.sku,
+              }
+            : {}),
+
+          unit: "шт",
+        };
       },
-      { status: 500 }
+    );
+
+    /*
+     * =====================================================
+     * 16. CREATE MONOBANK INVOICE
+     * =====================================================
+     */
+
+    try {
+      const invoice =
+        await createMonoInvoice({
+          amount: amountMinor,
+
+          reference: payment.id,
+
+          destination:
+            `Оплата замовлення ${order.orderNumber}`,
+
+          comment:
+            `UkrTradeHub — замовлення ${order.orderNumber}`,
+
+          redirectUrl,
+
+          webHookUrl,
+
+          basketOrder,
+        });
+
+      /*
+       * ===================================================
+       * 17. SAVE INVOICE ID
+       * ===================================================
+       */
+
+      const updatedPayment =
+        await db.payment.update({
+          where: {
+            id: payment.id,
+          },
+
+          data: {
+            transactionId:
+              invoice.invoiceId,
+
+            status:
+              PaymentStatus.PENDING,
+          },
+        });
+
+      /*
+       * ===================================================
+       * 18. RESPONSE
+       * ===================================================
+       */
+
+      return NextResponse.json({
+        success: true,
+
+        payment: {
+          id: updatedPayment.id,
+          status: updatedPayment.status,
+          method: updatedPayment.method,
+          amount: updatedPayment.amount,
+          provider: updatedPayment.provider,
+          transactionId:
+            updatedPayment.transactionId,
+        },
+
+        redirect: true,
+
+        paymentUrl:
+          invoice.pageUrl,
+
+        appUrl:
+          invoice.appUrl ?? null,
+      });
+    } catch (error) {
+      console.error(
+        "[POST /api/payments] Monobank invoice error:",
+        error,
+      );
+
+      /*
+       * Invoice не створився.
+       * Payment позначаємо FAILED.
+       */
+
+      try {
+        await db.payment.update({
+          where: {
+            id: payment.id,
+          },
+
+          data: {
+            status: PaymentStatus.FAILED,
+          },
+        });
+      } catch (updateError) {
+        console.error(
+          "[POST /api/payments] Failed to mark payment as FAILED:",
+          updateError,
+        );
+      }
+
+      return jsonError(
+        error instanceof Error
+          ? error.message
+          : "Не вдалося створити оплату Monobank",
+        502,
+        {
+          paymentId: payment.id,
+        },
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[POST /api/payments]",
+      error,
+    );
+
+    return jsonError(
+      "Не вдалося створити оплату",
+      500,
     );
   }
 }
-

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
 
 // =====================================================
 // TYPES
@@ -192,6 +193,7 @@ export async function POST(
       select: {
         id: true,
         name: true,
+        userId: true,
       },
     });
 
@@ -203,6 +205,23 @@ export async function POST(
         },
         {
           status: 404,
+        }
+      );
+    }
+
+    const currentUser = await getCurrentUser();
+
+    if (
+      !currentUser ||
+      (currentUser.role !== "ADMIN" && shop.userId !== currentUser.id)
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Доступ заборонено",
+        },
+        {
+          status: 403,
         }
       );
     }
@@ -400,6 +419,7 @@ export async function PATCH(
       },
       select: {
         id: true,
+        userId: true,
       },
     });
 
@@ -411,6 +431,23 @@ export async function PATCH(
         },
         {
           status: 404,
+        }
+      );
+    }
+
+    const currentUser = await getCurrentUser();
+
+    if (
+      !currentUser ||
+      (currentUser.role !== "ADMIN" && shop.userId !== currentUser.id)
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Доступ заборонено",
+        },
+        {
+          status: 403,
         }
       );
     }
@@ -628,6 +665,7 @@ export async function DELETE(
       },
       select: {
         id: true,
+        userId: true,
       },
     });
 
@@ -639,6 +677,23 @@ export async function DELETE(
         },
         {
           status: 404,
+        }
+      );
+    }
+
+    const currentUser = await getCurrentUser();
+
+    if (
+      !currentUser ||
+      (currentUser.role !== "ADMIN" && shop.userId !== currentUser.id)
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Доступ заборонено",
+        },
+        {
+          status: 403,
         }
       );
     }

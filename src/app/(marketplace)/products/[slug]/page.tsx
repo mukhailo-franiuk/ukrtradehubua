@@ -1,9 +1,9 @@
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  ChevronLeft,
   ChevronRight,
   Heart,
   Loader2,
@@ -15,6 +15,8 @@ import {
   Store,
   Truck,
 } from "lucide-react";
+
+import ProductReviews from "@/components/reviews/ProductReviews";
 
 type ProductImage = {
   id: string;
@@ -55,7 +57,6 @@ type VariantValue = {
 
 type ProductVariant = {
   id: string;
-  sku: string;
   title?: string | null;
 
   price?: string | number | null;
@@ -71,19 +72,6 @@ type ProductVariant = {
   images?: Array<{
     image: ProductImage;
   }>;
-};
-
-type ProductReview = {
-  id: string;
-  rating: number;
-  title?: string | null;
-  comment?: string | null;
-  createdAt: string;
-
-  user?: {
-    id: string;
-    name?: string | null;
-  };
 };
 
 type Product = {
@@ -150,14 +138,19 @@ type Product = {
   variants?: ProductVariant[];
 
   attributes?: ProductAttributeValue[];
-
-  reviews?: ProductReview[];
 };
 
 type ApiResponse = {
   success?: boolean;
   data?: Product | Product[];
   error?: string;
+  message?: string;
+};
+
+type CartResponse = {
+  success?: boolean;
+  error?: string;
+  message?: string;
 };
 
 type PageProps = {
@@ -173,6 +166,22 @@ function formatPrice(
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   }).format(Number(value ?? 0));
+}
+
+function getVariantLabel(variant: ProductVariant) {
+  if (variant.title) {
+    return variant.title;
+  }
+
+  const values = variant.values
+    ?.map((item) => item.value.value)
+    .filter(Boolean);
+
+  if (values && values.length > 0) {
+    return values.join(" / ");
+  }
+
+  return "Варіант товару";
 }
 
 export default function ProductPage({
@@ -204,6 +213,9 @@ export default function ProductPage({
   const [cartMessage, setCartMessage] =
     useState("");
 
+  const [cartSuccess, setCartSuccess] =
+    useState(false);
+
   // =====================================================
   // GET SLUG
   // =====================================================
@@ -233,9 +245,7 @@ export default function ProductPage({
         setError("");
 
         const response = await fetch(
-          `/api/products?slug=${encodeURIComponent(
-            slug
-          )}`,
+          `/api/products?slug=${encodeURIComponent(slug)}`,
           {
             method: "GET",
             cache: "no-store",
@@ -248,12 +258,12 @@ export default function ProductPage({
         if (!response.ok) {
           throw new Error(
             result.error ||
+              result.message ||
               "Не вдалося завантажити товар"
           );
         }
 
-        let loadedProduct: Product | null =
-          null;
+        let loadedProduct: Product | null = null;
 
         if (
           result.data &&
@@ -262,20 +272,15 @@ export default function ProductPage({
           loadedProduct = result.data;
         }
 
-        if (
-          Array.isArray(result.data)
-        ) {
+        if (Array.isArray(result.data)) {
           loadedProduct =
             result.data.find(
-              (item) =>
-                item.slug === slug
+              (item) => item.slug === slug
             ) ?? null;
         }
 
         if (!loadedProduct) {
-          throw new Error(
-            "Товар не знайдено"
-          );
+          throw new Error("Товар не знайдено");
         }
 
         setProduct(loadedProduct);
@@ -284,14 +289,23 @@ export default function ProductPage({
           loadedProduct.variants?.find(
             (variant) =>
               variant.isActive &&
-              variant.stock > 0
+              variant.stock -
+                variant.reservedStock >
+                0
           );
 
         if (firstActiveVariant) {
           setSelectedVariantId(
             firstActiveVariant.id
           );
+        } else {
+          setSelectedVariantId(null);
         }
+
+        setQuantity(1);
+        setSelectedImageIndex(0);
+        setCartMessage("");
+        setCartSuccess(false);
       } catch (error) {
         console.error(
           "Product page error:",
@@ -316,18 +330,14 @@ export default function ProductPage({
   // =====================================================
 
   const selectedVariant = useMemo(() => {
-    if (
-      !product ||
-      !selectedVariantId
-    ) {
+    if (!product || !selectedVariantId) {
       return null;
     }
 
     return (
       product.variants?.find(
         (variant) =>
-          variant.id ===
-          selectedVariantId
+          variant.id === selectedVariantId
       ) ?? null
     );
   }, [
@@ -351,10 +361,16 @@ export default function ProductPage({
 
   const availableStock =
     selectedVariant
-      ? selectedVariant.stock -
-        selectedVariant.reservedStock
-      : (product?.stock ?? 0) -
-        (product?.reservedStock ?? 0);
+      ? Math.max(
+          0,
+          selectedVariant.stock -
+            selectedVariant.reservedStock
+        )
+      : Math.max(
+          0,
+          (product?.stock ?? 0) -
+            (product?.reservedStock ?? 0)
+        );
 
   // =====================================================
   // IMAGES
@@ -370,9 +386,7 @@ export default function ProductPage({
         ?.map((item) => item.image)
         .filter(Boolean) ?? [];
 
-    if (
-      variantImages.length > 0
-    ) {
+    if (variantImages.length > 0) {
       return variantImages;
     }
 
@@ -406,9 +420,13 @@ export default function ProductPage({
   }
 
   function increaseQuantity() {
+    if (availableStock <= 0) {
+      return;
+    }
+
     setQuantity((current) =>
       Math.min(
-        Math.max(1, availableStock),
+        availableStock,
         current + 1
       )
     );
@@ -421,6 +439,10 @@ export default function ProductPage({
     ) {
       setQuantity(availableStock);
     }
+
+    if (availableStock <= 0) {
+      setQuantity(1);
+    }
   }, [
     availableStock,
     quantity,
@@ -431,13 +453,35 @@ export default function ProductPage({
   // =====================================================
 
   async function addToCart() {
-    if (!product) {
+    if (!product || addingToCart) {
+      return;
+    }
+
+    setCartMessage("");
+    setCartSuccess(false);
+
+    if (product.status !== "ACTIVE") {
+      setCartMessage(
+        "Цей товар зараз недоступний для покупки."
+      );
+
       return;
     }
 
     if (availableStock <= 0) {
       setCartMessage(
-        "Товару немає в наявності"
+        "Товару немає в наявності."
+      );
+
+      return;
+    }
+
+    if (
+      quantity < 1 ||
+      quantity > availableStock
+    ) {
+      setCartMessage(
+        `Максимальна доступна кількість: ${availableStock}.`
       );
 
       return;
@@ -445,7 +489,6 @@ export default function ProductPage({
 
     try {
       setAddingToCart(true);
-      setCartMessage("");
 
       const response = await fetch(
         "/api/cart",
@@ -461,33 +504,55 @@ export default function ProductPage({
 
           body: JSON.stringify({
             productId: product.id,
-
             variantId:
               selectedVariant?.id ?? null,
-
             quantity,
           }),
         }
       );
 
-      const result =
-        await response.json();
+      let result: CartResponse = {};
+
+      try {
+        result =
+          (await response.json()) as CartResponse;
+      } catch {
+        result = {};
+      }
+
+      if (response.status === 401) {
+        setCartMessage(
+          "Щоб додати товар у кошик, увійдіть у свій акаунт."
+        );
+
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(
-          result?.error ||
-            "Не вдалося додати товар у кошик"
+          result.error ||
+            result.message ||
+            "Не вдалося додати товар у кошик."
         );
       }
 
+      setCartSuccess(true);
+
       setCartMessage(
-        "Товар додано до кошика"
+        "Товар успішно додано до кошика."
       );
     } catch (error) {
+      console.error(
+        "Add to cart error:",
+        error
+      );
+
+      setCartSuccess(false);
+
       setCartMessage(
         error instanceof Error
           ? error.message
-          : "Не вдалося додати товар у кошик"
+          : "Не вдалося додати товар у кошик."
       );
     } finally {
       setAddingToCart(false);
@@ -556,7 +621,9 @@ export default function ProductPage({
     <main className="min-h-screen bg-[#09090b] text-white">
       <div className="mx-auto w-full max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8">
 
+        {/* ================================================= */}
         {/* BREADCRUMBS */}
+        {/* ================================================= */}
 
         <div className="mb-8 flex flex-wrap items-center gap-2 text-sm text-zinc-500">
           <Link
@@ -592,6 +659,10 @@ export default function ProductPage({
           </span>
         </div>
 
+        {/* ================================================= */}
+        {/* PRODUCT MAIN */}
+        {/* ================================================= */}
+
         <div className="grid gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(420px,0.9fr)]">
 
           {/* ================================================= */}
@@ -602,9 +673,7 @@ export default function ProductPage({
             <div className="relative aspect-square overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900">
               {selectedImage ? (
                 <img
-                  src={
-                    selectedImage.url
-                  }
+                  src={selectedImage.url}
                   alt={
                     selectedImage.alt ||
                     product.title
@@ -623,18 +692,21 @@ export default function ProductPage({
               <button
                 type="button"
                 className="absolute right-5 top-5 flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur transition hover:bg-yellow-400 hover:text-black"
+                aria-label="Додати в обране"
               >
                 <Heart size={21} />
               </button>
 
               {product.isNew && (
-                <span className="absolute left-5 top-5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-bold">
+                <span className="absolute left-5 top-5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-bold text-black">
                   NEW
                 </span>
               )}
             </div>
 
+            {/* ================================================= */}
             {/* THUMBNAILS */}
+            {/* ================================================= */}
 
             {images.length > 1 && (
               <div className="mt-4 flex gap-3 overflow-x-auto pb-2">
@@ -691,7 +763,9 @@ export default function ProductPage({
               {product.title}
             </h1>
 
+            {/* ================================================= */}
             {/* RATING */}
+            {/* ================================================= */}
 
             <div className="mt-5 flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-1">
@@ -707,26 +781,35 @@ export default function ProductPage({
                 </span>
 
                 <span className="text-sm text-zinc-500">
-                  ({product.reviewsCount} відгуків)
+                  ({product.reviewsCount}{" "}
+                  {product.reviewsCount === 1
+                    ? "відгук"
+                    : product.reviewsCount >= 2 &&
+                        product.reviewsCount <= 4
+                      ? "відгуки"
+                      : "відгуків"}
+                  )
                 </span>
               </div>
 
               <span className="text-sm text-zinc-500">
                 Код товару:{" "}
-                {selectedVariant?.sku ||
-                  product.sku ||
+                {product.sku ||
                   product.id}
               </span>
             </div>
 
+            {/* ================================================= */}
             {/* PRICE */}
+            {/* ================================================= */}
 
             <div className="mt-7 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
               <div className="flex flex-wrap items-end gap-3">
                 <span className="text-4xl font-bold text-yellow-400">
                   {formatPrice(
                     currentPrice
-                  )} ₴
+                  )}{" "}
+                  ₴
                 </span>
 
                 {currentOldPrice &&
@@ -739,7 +822,8 @@ export default function ProductPage({
                     <span className="pb-1 text-lg text-zinc-500 line-through">
                       {formatPrice(
                         currentOldPrice
-                      )} ₴
+                      )}{" "}
+                      ₴
                     </span>
                   )}
               </div>
@@ -767,7 +851,9 @@ export default function ProductPage({
               </div>
             </div>
 
+            {/* ================================================= */}
             {/* SHORT DESCRIPTION */}
+            {/* ================================================= */}
 
             {product.shortDescription && (
               <p className="mt-6 leading-7 text-zinc-400">
@@ -775,7 +861,9 @@ export default function ProductPage({
               </p>
             )}
 
+            {/* ================================================= */}
             {/* VARIANTS */}
+            {/* ================================================= */}
 
             {product.variants &&
               product.variants.length > 0 && (
@@ -793,17 +881,16 @@ export default function ProductPage({
                       .map(
                         (variant) => {
                           const label =
-                            variant.title ||
-                            variant.values
-                              ?.map(
-                                (item) =>
-                                  item.value
-                                    .value
-                              )
-                              .join(
-                                " / "
-                              ) ||
-                            variant.sku;
+                            getVariantLabel(
+                              variant
+                            );
+
+                          const variantStock =
+                            Math.max(
+                              0,
+                              variant.stock -
+                                variant.reservedStock
+                            );
 
                           return (
                             <button
@@ -812,15 +899,23 @@ export default function ProductPage({
                               }
                               type="button"
                               disabled={
-                                variant.stock -
-                                  variant.reservedStock <=
+                                variantStock <=
                                 0
                               }
-                              onClick={() =>
+                              onClick={() => {
                                 setSelectedVariantId(
                                   variant.id
-                                )
-                              }
+                                );
+                                setQuantity(
+                                  1
+                                );
+                                setCartMessage(
+                                  ""
+                                );
+                                setCartSuccess(
+                                  false
+                                );
+                              }}
                               className={`rounded-xl border px-4 py-3 text-sm transition ${
                                 selectedVariantId ===
                                 variant.id
@@ -837,21 +932,30 @@ export default function ProductPage({
                 </div>
               )}
 
-            {/* QUANTITY */}
+            {/* ================================================= */}
+            {/* QUANTITY + CART */}
+            {/* ================================================= */}
 
             <div className="mt-8">
               <p className="mb-3 text-sm font-semibold text-zinc-300">
                 Кількість
               </p>
 
-              <div className="flex items-center gap-4">
-                <div className="flex items-center rounded-xl border border-zinc-800 bg-zinc-900">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="flex w-fit items-center rounded-xl border border-zinc-800 bg-zinc-900">
                   <button
                     type="button"
                     onClick={
                       decreaseQuantity
                     }
-                    className="flex h-12 w-12 items-center justify-center transition hover:text-yellow-400"
+                    disabled={
+                      availableStock <=
+                        0 ||
+                      quantity <= 1 ||
+                      addingToCart
+                    }
+                    className="flex h-12 w-12 items-center justify-center transition hover:text-yellow-400 disabled:opacity-40"
+                    aria-label="Зменшити кількість"
                   >
                     <Minus size={18} />
                   </button>
@@ -868,9 +972,11 @@ export default function ProductPage({
                     disabled={
                       availableStock <=
                         quantity ||
-                      availableStock <= 0
+                      availableStock <= 0 ||
+                      addingToCart
                     }
                     className="flex h-12 w-12 items-center justify-center transition hover:text-yellow-400 disabled:opacity-40"
+                    aria-label="Збільшити кількість"
                   >
                     <Plus size={18} />
                   </button>
@@ -883,33 +989,82 @@ export default function ProductPage({
                     availableStock <= 0
                   }
                   onClick={addToCart}
-                  className="flex flex-1 items-center justify-center gap-3 rounded-xl bg-yellow-400 px-6 py-3.5 font-bold text-black transition hover:bg-yellow-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex min-h-12 flex-1 items-center justify-center gap-3 rounded-xl bg-yellow-400 px-6 py-3.5 font-bold text-black transition hover:bg-yellow-300 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {addingToCart ? (
-                    <Loader2
-                      size={20}
-                      className="animate-spin"
-                    />
-                  ) : (
-                    <ShoppingCart
-                      size={20}
-                    />
-                  )}
+                    <>
+                      <Loader2
+                        size={20}
+                        className="animate-spin"
+                      />
 
-                  {addingToCart
-                    ? "Додаємо..."
-                    : "Додати у кошик"}
+                      Додаємо...
+                    </>
+                  ) : (
+                    <>
+                      <ShoppingCart
+                        size={20}
+                      />
+
+                      Додати у кошик
+                    </>
+                  )}
                 </button>
               </div>
 
               {cartMessage && (
-                <p className="mt-3 text-sm text-yellow-400">
-                  {cartMessage}
+                <div
+                  className={`mt-4 rounded-xl border p-4 text-sm ${
+                    cartSuccess
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                      : "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
+                  }`}
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <span>
+                      {cartMessage}
+                    </span>
+
+                    {cartSuccess && (
+                      <Link
+                        href="/cart"
+                        className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-yellow-400 px-4 py-2 font-semibold text-black transition hover:bg-yellow-300"
+                      >
+                        <ShoppingCart
+                          size={16}
+                        />
+
+                        Перейти в кошик
+                      </Link>
+                    )}
+
+                    {!cartSuccess &&
+                      cartMessage.includes(
+                        "увійдіть"
+                      ) && (
+                        <Link
+                          href="/login"
+                          className="inline-flex shrink-0 items-center justify-center rounded-lg bg-yellow-400 px-4 py-2 font-semibold text-black transition hover:bg-yellow-300"
+                        >
+                          Увійти
+                        </Link>
+                      )}
+                  </div>
+                </div>
+              )}
+
+              {availableStock > 0 && (
+                <p className="mt-3 text-xs text-zinc-600">
+                  Максимальна кількість для
+                  замовлення:{" "}
+                  {availableStock}
                 </p>
               )}
             </div>
 
+            {/* ================================================= */}
             {/* SHOP */}
+            {/* ================================================= */}
 
             {product.shop && (
               <Link
@@ -932,6 +1087,22 @@ export default function ProductPage({
                     <p className="mt-1 font-semibold">
                       {product.shop.name}
                     </p>
+
+                    {product.shop.rating !==
+                      undefined && (
+                      <div className="mt-1 flex items-center gap-1 text-xs text-zinc-500">
+                        <Star
+                          size={12}
+                          className="fill-yellow-400 text-yellow-400"
+                        />
+
+                        <span>
+                          {Number(
+                            product.shop.rating
+                          ).toFixed(1)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -942,7 +1113,9 @@ export default function ProductPage({
               </Link>
             )}
 
+            {/* ================================================= */}
             {/* DELIVERY */}
+            {/* ================================================= */}
 
             <div className="mt-5 flex gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
               <Truck
@@ -976,7 +1149,7 @@ export default function ProductPage({
               Опис товару
             </h2>
 
-            <div className="mt-6 rounded-3xl border border-zinc-800 bg-zinc-900/50 p-6 leading-8 text-zinc-300 whitespace-pre-wrap">
+            <div className="mt-6 whitespace-pre-wrap rounded-3xl border border-zinc-800 bg-zinc-900/50 p-6 leading-8 text-zinc-300">
               {product.description}
             </div>
           </section>
@@ -1072,79 +1245,9 @@ export default function ProductPage({
         {/* REVIEWS */}
         {/* ================================================= */}
 
-        <section className="mt-16 pb-10">
-          <div className="flex items-center justify-between">
-            <h2 className="text-2xl font-bold">
-              Відгуки
-            </h2>
-
-            <div className="flex items-center gap-2">
-              <Star
-                size={18}
-                className="fill-yellow-400 text-yellow-400"
-              />
-
-              <span className="font-semibold">
-                {Number(
-                  product.rating
-                ).toFixed(1)}
-              </span>
-
-              <span className="text-zinc-500">
-                ({product.reviewsCount})
-              </span>
-            </div>
-          </div>
-
-          {product.reviews &&
-          product.reviews.length > 0 ? (
-            <div className="mt-6 grid gap-4">
-              {product.reviews.map(
-                (review) => (
-                  <article
-                    key={review.id}
-                    className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5"
-                  >
-                    <div className="flex items-center justify-between gap-4">
-                      <p className="font-medium">
-                        {review.user?.name ||
-                          "Покупець"}
-                      </p>
-
-                      <div className="flex items-center gap-1">
-                        <Star
-                          size={16}
-                          className="fill-yellow-400 text-yellow-400"
-                        />
-
-                        <span>
-                          {review.rating}
-                        </span>
-                      </div>
-                    </div>
-
-                    {review.title && (
-                      <h3 className="mt-4 font-semibold">
-                        {review.title}
-                      </h3>
-                    )}
-
-                    {review.comment && (
-                      <p className="mt-2 leading-7 text-zinc-400">
-                        {review.comment}
-                      </p>
-                    )}
-                  </article>
-                )
-              )}
-            </div>
-          ) : (
-            <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-8 text-center text-zinc-500">
-              Для цього товару ще немає
-              відгуків.
-            </div>
-          )}
-        </section>
+        <ProductReviews
+          productId={product.id}
+        />
       </div>
     </main>
   );

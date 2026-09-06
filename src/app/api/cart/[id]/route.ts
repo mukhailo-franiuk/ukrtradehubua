@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
-
-// =====================================================
-// TYPES
-// =====================================================
+import { getCurrentUser } from "@/lib/auth";
 
 type RouteContext = {
   params: Promise<{
@@ -11,231 +8,152 @@ type RouteContext = {
   }>;
 };
 
-type UpdateCartItemBody = {
-  quantity?: number;
-};
-
-// =====================================================
-// AUTH
-// =====================================================
-
-async function getCurrentUser(request: NextRequest) {
-  const token = request.cookies.get("session_token")?.value;
-
-  if (!token) {
+function decimalToNumber(value: unknown): number | null {
+  if (value === null || value === undefined) {
     return null;
   }
 
-  const session = await db.session.findUnique({
-    where: {
-      token,
-    },
-    include: {
-      user: true,
-    },
-  });
+  const number = Number(value);
 
-  if (!session) {
-    return null;
-  }
-
-  if (session.expiresAt <= new Date()) {
-    return null;
-  }
-
-  if (session.user.isBlocked) {
-    return null;
-  }
-
-  return session.user;
+  return Number.isFinite(number) ? number : null;
 }
 
-// =====================================================
-// GET /api/cart/[id]
-// =====================================================
-
-export async function GET(
-  request: NextRequest,
-  context: RouteContext
-) {
-  try {
-    const user = await getCurrentUser(request);
-
-    if (!user) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Необхідна авторизація",
-        },
-        {
-          status: 401,
-        }
-      );
-    }
-
-    const { id } = await context.params;
-
-    if (!id) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "ID позиції кошика є обов'язковим",
-        },
-        {
-          status: 400,
-        }
-      );
-    }
-
-    const item = await db.cartItem.findFirst({
-      where: {
-        id,
-
-        cart: {
-          userId: user.id,
-        },
-      },
-
-      include: {
-        product: {
-          include: {
-            images: {
-              orderBy: {
-                sortOrder: "asc",
-              },
-            },
-
-            shop: {
-              select: {
-                id: true,
-                name: true,
-                slug: true,
-                rating: true,
-                isActive: true,
-                sellerStatus: true,
-              },
-            },
-          },
-        },
-      },
-    });
-
-    if (!item) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Позицію кошика не знайдено",
-        },
-        {
-          status: 404,
-        }
-      );
-    }
-
-    return NextResponse.json({
-      success: true,
-      data: item,
-    });
-  } catch (error) {
-    console.error("GET /api/cart/[id] error:", error);
-
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Не вдалося отримати позицію кошика",
-      },
-      {
-        status: 500,
-      }
-    );
-  }
-}
-
-// =====================================================
-// PATCH /api/cart/[id]
-// =====================================================
+/*
+ * ============================================================
+ * PATCH /api/cart/[id]
+ * ============================================================
+ *
+ * Змінює кількість конкретної позиції кошика.
+ *
+ * Body:
+ *
+ * {
+ *   "quantity": 3
+ * }
+ *
+ * Якщо quantity <= 0 — позиція видаляється.
+ *
+ * ВАЖЛИВО:
+ * [id] — це ID CartItem, а не productId.
+ */
 
 export async function PATCH(
   request: NextRequest,
-  context: RouteContext
+  { params }: RouteContext
 ) {
   try {
-    // -------------------------------------------------
-    // AUTH
-    // -------------------------------------------------
+    /*
+     * ----------------------------------------------------------
+     * PARAMS
+     * ----------------------------------------------------------
+     */
 
-    const user = await getCurrentUser(request);
-
-    if (!user) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Необхідна авторизація",
-        },
-        {
-          status: 401,
-        }
-      );
-    }
-
-    const { id } = await context.params;
+    const { id } = await params;
 
     if (!id) {
       return NextResponse.json(
         {
           success: false,
-          error: "ID позиції кошика є обов'язковим",
+          error: "CART_ITEM_ID_REQUIRED",
+          message: "ID позиції кошика є обов'язковим.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    // -------------------------------------------------
-    // BODY
-    // -------------------------------------------------
+    /*
+     * ----------------------------------------------------------
+     * AUTH
+     * ----------------------------------------------------------
+     */
 
-    let body: UpdateCartItemBody;
+    const user = await getCurrentUser();
+
+    if (!user) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "UNAUTHORIZED",
+          message: "Потрібно увійти в акаунт.",
+        },
+        { status: 401 }
+      );
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * BODY
+     * ----------------------------------------------------------
+     */
+
+    let body: unknown;
 
     try {
-      body = (await request.json()) as UpdateCartItemBody;
+      body = await request.json();
     } catch {
       return NextResponse.json(
         {
           success: false,
-          error: "Некоректний JSON",
+          error: "INVALID_JSON",
+          message: "Некоректний JSON.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    const quantity = body.quantity;
+    if (!body || typeof body !== "object") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "INVALID_BODY",
+          message: "Некоректне тіло запиту.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const data = body as {
+      quantity?: unknown;
+    };
+
+    const quantity = Number(data.quantity);
+
+    /*
+     * ----------------------------------------------------------
+     * QUANTITY
+     * ----------------------------------------------------------
+     */
 
     if (
-      typeof quantity !== "number" ||
       !Number.isInteger(quantity) ||
-      quantity < 1
+      quantity < 0 ||
+      quantity > 100
     ) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "quantity повинна бути цілим числом більше 0",
+          error: "INVALID_QUANTITY",
+          message:
+            "Кількість повинна бути цілим числом від 0 до 100.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    // -------------------------------------------------
-    // CART ITEM
-    // -------------------------------------------------
+    /*
+     * ==========================================================
+     * CART ITEM
+     * ==========================================================
+     *
+     * Одразу перевіряємо:
+     *
+     * cartItem.id
+     * cartItem.cart.userId
+     *
+     * Тобто користувач не зможе змінити чужу позицію.
+     */
 
-    const item = await db.cartItem.findFirst({
+    const cartItem = await db.cartItem.findFirst({
       where: {
         id,
 
@@ -244,226 +162,343 @@ export async function PATCH(
         },
       },
 
-      include: {
+      select: {
+        id: true,
+        cartId: true,
+        productId: true,
+        variantId: true,
+        quantity: true,
+
         product: {
           select: {
             id: true,
             title: true,
+            status: true,
             stock: true,
             reservedStock: true,
-            status: true,
 
             shop: {
               select: {
+                id: true,
                 isActive: true,
                 sellerStatus: true,
               },
             },
           },
         },
+
+        variant: {
+          select: {
+            id: true,
+            productId: true,
+            stock: true,
+            reservedStock: true,
+            isActive: true,
+          },
+        },
       },
     });
 
-    if (!item) {
+    /*
+     * ----------------------------------------------------------
+     * ITEM NOT FOUND
+     * ----------------------------------------------------------
+     */
+
+    if (!cartItem) {
       return NextResponse.json(
         {
           success: false,
-          error: "Позицію кошика не знайдено",
+          error: "CART_ITEM_NOT_FOUND",
+          message: "Позицію кошика не знайдено.",
         },
-        {
-          status: 404,
-        }
+        { status: 404 }
       );
     }
 
-    // -------------------------------------------------
-    // PRODUCT STATUS
-    // -------------------------------------------------
+    /*
+     * ==========================================================
+     * QUANTITY = 0
+     * ==========================================================
+     *
+     * Видаляємо позицію.
+     */
 
-    if (item.product.status !== "ACTIVE") {
+    if (quantity === 0) {
+      await db.cartItem.delete({
+        where: {
+          id: cartItem.id,
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        deleted: true,
+        message: "Товар видалено з кошика.",
+        item: {
+          id: cartItem.id,
+          productId: cartItem.productId,
+          variantId: cartItem.variantId,
+          quantity: 0,
+        },
+      });
+    }
+
+    /*
+     * ==========================================================
+     * PRODUCT VALIDATION
+     * ==========================================================
+     */
+
+    if (cartItem.product.status !== "ACTIVE") {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "Цей товар зараз недоступний для покупки",
+          error: "PRODUCT_NOT_AVAILABLE",
+          message: "Товар зараз недоступний.",
         },
-        {
-          status: 409,
-        }
+        { status: 400 }
       );
     }
 
-    // -------------------------------------------------
-    // SHOP STATUS
-    // -------------------------------------------------
-
-    if (!item.product.shop.isActive) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Магазин цього товару зараз неактивний",
-        },
-        {
-          status: 409,
-        }
-      );
-    }
+    /*
+     * ==========================================================
+     * SHOP VALIDATION
+     * ==========================================================
+     */
 
     if (
-      item.product.shop.sellerStatus !== "ACTIVE"
+      !cartItem.product.shop ||
+      !cartItem.product.shop.isActive ||
+      cartItem.product.shop.sellerStatus !== "ACTIVE"
     ) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "Продавець цього товару зараз неактивний",
+          error: "SHOP_NOT_AVAILABLE",
+          message: "Магазин зараз недоступний.",
         },
-        {
-          status: 409,
-        }
+        { status: 400 }
       );
     }
 
-    // -------------------------------------------------
-    // STOCK
-    // -------------------------------------------------
+    /*
+     * ==========================================================
+     * VARIANT VALIDATION
+     * ==========================================================
+     */
 
-    const availableStock =
-      item.product.stock -
-      item.product.reservedStock;
+    if (cartItem.variantId) {
+      if (!cartItem.variant) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "VARIANT_NOT_FOUND",
+            message: "Варіант товару більше не існує.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (!cartItem.variant.isActive) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "VARIANT_NOT_AVAILABLE",
+            message: "Цей варіант товару недоступний.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (
+        cartItem.variant.productId !==
+        cartItem.productId
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "INVALID_VARIANT",
+            message: "Варіант не належить цьому товару.",
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    /*
+     * ==========================================================
+     * AVAILABLE STOCK
+     * ==========================================================
+     */
+
+    const availableStock = cartItem.variant
+      ? Math.max(
+          0,
+          cartItem.variant.stock -
+            cartItem.variant.reservedStock
+        )
+      : Math.max(
+          0,
+          cartItem.product.stock -
+            cartItem.product.reservedStock
+        );
+
+    /*
+     * ----------------------------------------------------------
+     * OUT OF STOCK
+     * ----------------------------------------------------------
+     */
 
     if (availableStock <= 0) {
       return NextResponse.json(
         {
           success: false,
-          error: "Товар закінчився",
+          error: "OUT_OF_STOCK",
+          message: "Товару більше немає в наявності.",
           availableStock: 0,
         },
-        {
-          status: 409,
-        }
+        { status: 400 }
       );
     }
+
+    /*
+     * ----------------------------------------------------------
+     * INSUFFICIENT STOCK
+     * ----------------------------------------------------------
+     */
 
     if (quantity > availableStock) {
       return NextResponse.json(
         {
           success: false,
-          error: `Доступно лише ${availableStock} шт.`,
+          error: "INSUFFICIENT_STOCK",
+          message: `Доступно лише ${availableStock} шт.`,
           availableStock,
         },
-        {
-          status: 409,
-        }
+        { status: 400 }
       );
     }
 
-    // -------------------------------------------------
-    // UPDATE
-    // -------------------------------------------------
+    /*
+     * ==========================================================
+     * UPDATE
+     * ==========================================================
+     */
 
-    const updatedItem =
-      await db.cartItem.update({
-        where: {
-          id: item.id,
-        },
+    const updatedItem = await db.cartItem.update({
+      where: {
+        id: cartItem.id,
+      },
 
-        data: {
-          quantity,
-        },
+      data: {
+        quantity,
+      },
 
-        include: {
-          product: {
-            include: {
-              images: {
-                orderBy: {
-                  sortOrder: "asc",
-                },
-              },
+      select: {
+        id: true,
+        productId: true,
+        variantId: true,
+        quantity: true,
+      },
+    });
 
-              shop: {
-                select: {
-                  id: true,
-                  name: true,
-                  slug: true,
-                  rating: true,
-                  isActive: true,
-                  sellerStatus: true,
-                },
-              },
-            },
-          },
-        },
-      });
+    /*
+     * ==========================================================
+     * RESPONSE
+     * ==========================================================
+     */
 
     return NextResponse.json({
       success: true,
-      message: "Кількість товару оновлено",
-      data: updatedItem,
+
+      message: "Кількість товару оновлено.",
+
+      item: updatedItem,
+
+      availableStock,
     });
   } catch (error) {
-    console.error("PATCH /api/cart/[id] error:", error);
+    console.error(
+      "PATCH /api/cart/[id] error:",
+      error
+    );
 
     return NextResponse.json(
       {
         success: false,
-        error:
-          "Не вдалося оновити кількість товару",
+        error: "INTERNAL_SERVER_ERROR",
+        message:
+          "Не вдалося оновити кількість товару.",
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }
 
-// =====================================================
-// DELETE /api/cart/[id]
-// =====================================================
+/*
+ * ============================================================
+ * DELETE /api/cart/[id]
+ * ============================================================
+ *
+ * Видаляє конкретну позицію з кошика.
+ *
+ * [id] = CartItem.id
+ */
 
 export async function DELETE(
-  request: NextRequest,
-  context: RouteContext
+  _request: NextRequest,
+  { params }: RouteContext
 ) {
   try {
-    // -------------------------------------------------
-    // AUTH
-    // -------------------------------------------------
+    /*
+     * ----------------------------------------------------------
+     * PARAMS
+     * ----------------------------------------------------------
+     */
 
-    const user = await getCurrentUser(request);
-
-    if (!user) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Необхідна авторизація",
-        },
-        {
-          status: 401,
-        }
-      );
-    }
-
-    const { id } = await context.params;
+    const { id } = await params;
 
     if (!id) {
       return NextResponse.json(
         {
           success: false,
-          error: "ID позиції кошика є обов'язковим",
+          error: "CART_ITEM_ID_REQUIRED",
+          message: "ID позиції кошика є обов'язковим.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    // -------------------------------------------------
-    // FIND ITEM
-    // -------------------------------------------------
+    /*
+     * ----------------------------------------------------------
+     * AUTH
+     * ----------------------------------------------------------
+     */
 
-    const item = await db.cartItem.findFirst({
+    const user = await getCurrentUser();
+
+    if (!user) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "UNAUTHORIZED",
+          message: "Потрібно увійти в акаунт.",
+        },
+        { status: 401 }
+      );
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * FIND ITEM
+     * ----------------------------------------------------------
+     *
+     * Перевіряємо, що CartItem належить кошику
+     * поточного користувача.
+     */
+
+    const cartItem = await db.cartItem.findFirst({
       where: {
         id,
 
@@ -475,36 +510,59 @@ export async function DELETE(
       select: {
         id: true,
         productId: true,
+        variantId: true,
         quantity: true,
       },
     });
 
-    if (!item) {
+    /*
+     * ----------------------------------------------------------
+     * NOT FOUND
+     * ----------------------------------------------------------
+     */
+
+    if (!cartItem) {
       return NextResponse.json(
         {
           success: false,
-          error: "Позицію кошика не знайдено",
+          error: "CART_ITEM_NOT_FOUND",
+          message: "Позицію кошика не знайдено.",
         },
-        {
-          status: 404,
-        }
+        { status: 404 }
       );
     }
 
-    // -------------------------------------------------
-    // DELETE
-    // -------------------------------------------------
+    /*
+     * ----------------------------------------------------------
+     * DELETE
+     * ----------------------------------------------------------
+     */
 
     await db.cartItem.delete({
       where: {
-        id: item.id,
+        id: cartItem.id,
       },
     });
 
+    /*
+     * ----------------------------------------------------------
+     * SUCCESS
+     * ----------------------------------------------------------
+     */
+
     return NextResponse.json({
       success: true,
-      message: "Товар видалено з кошика",
-      deletedItemId: item.id,
+
+      deleted: true,
+
+      message: "Товар видалено з кошика.",
+
+      item: {
+        id: cartItem.id,
+        productId: cartItem.productId,
+        variantId: cartItem.variantId,
+        quantity: cartItem.quantity,
+      },
     });
   } catch (error) {
     console.error(
@@ -515,12 +573,11 @@ export async function DELETE(
     return NextResponse.json(
       {
         success: false,
-        error:
-          "Не вдалося видалити товар з кошика",
+        error: "INTERNAL_SERVER_ERROR",
+        message:
+          "Не вдалося видалити товар з кошика.",
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }

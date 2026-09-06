@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getAdmin } from "@/lib/auth";
 
 type RouteContext = {
   params: Promise<{
@@ -93,6 +94,18 @@ export async function POST(
   context: RouteContext
 ) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const { id } = await context.params;
 
     if (!id) {
@@ -197,6 +210,18 @@ export async function PUT(
   context: RouteContext
 ) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const { id } = await context.params;
 
     if (!id) {
@@ -332,6 +357,18 @@ export async function DELETE(
   context: RouteContext
 ) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     const { id } = await context.params;
 
     if (!id) {

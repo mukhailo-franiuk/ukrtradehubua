@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
+import { getAdmin } from "@/lib/auth";
 
 // =====================================================
 // TYPES
@@ -122,6 +123,18 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const admin = await getAdmin();
+
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Доступ заборонено",
+        },
+        { status: 403 }
+      );
+    }
+
     // -------------------------------------------------
     // PARSE BODY
     // -------------------------------------------------

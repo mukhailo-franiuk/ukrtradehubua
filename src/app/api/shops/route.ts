@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/prisma";
 import { SellerStatus } from "@prisma/client";
+import { getCurrentUser } from "@/lib/auth";
 
 // =====================================================
 // TYPES
@@ -146,10 +147,34 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const currentUser = await getCurrentUser();
+
+    if (!currentUser) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Необхідна авторизація",
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
     const body =
       (await request.json()) as CreateShopBody;
 
-    if (!body.userId) {
+    // Магазин завжди створюється для поточного залогіненого
+    // користувача — userId з тіла запиту ігнорується, щоб
+    // ніхто не міг створити магазин від імені чужого акаунта.
+    // ADMIN може вказати userId явно (напр. для офіційного
+    // магазину маркетплейсу).
+    const targetUserId =
+      currentUser.role === "ADMIN" && body.userId
+        ? body.userId
+        : currentUser.id;
+
+    if (!targetUserId) {
       return NextResponse.json(
         {
           success: false,
@@ -194,7 +219,7 @@ export async function POST(request: NextRequest) {
 
     const user = await db.user.findUnique({
       where: {
-        id: body.userId,
+        id: targetUserId,
       },
 
       include: {
@@ -263,7 +288,7 @@ export async function POST(request: NextRequest) {
 
     const shop = await db.shop.create({
       data: {
-        userId: body.userId,
+        userId: targetUserId,
 
         name: body.name.trim(),
         slug,
