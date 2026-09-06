@@ -1,8 +1,9 @@
+import Hero from "@/components/Hero";
 
 export default function Home() {
   return (
-    <div className="text-gray-100 pb-16 antialiased overflow-x-hidden">
-      
+    <div className="overflow-x-hidden pb-16 text-gray-100 antialiased">
+      <Hero />
     </div>
   );
 }
