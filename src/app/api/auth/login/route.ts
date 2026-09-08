@@ -1,8 +1,11 @@
+
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 
 import { db } from '@/lib/prisma';
 import { createSession } from '@/lib/auth';
+
+export const runtime = 'nodejs';
 
 export async function POST(request: Request) {
   try {
@@ -30,6 +33,10 @@ export async function POST(request: Request) {
         ? body.password
         : '';
 
+    // =========================================================
+    // VALIDATION
+    // =========================================================
+
     if (!email || !password) {
       return NextResponse.json(
         {
@@ -39,6 +46,10 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+
+    // =========================================================
+    // FIND USER
+    // =========================================================
 
     const user = await db.user.findUnique({
       where: {
@@ -56,25 +67,40 @@ export async function POST(request: Request) {
       );
     }
 
+    // =========================================================
+    // BLOCKED
+    // =========================================================
+
     if (user.isBlocked || user.status === 'BLOCKED') {
       return NextResponse.json(
         {
           success: false,
+          code: 'ACCOUNT_BLOCKED',
           message: 'Ваш акаунт заблокований',
         },
         { status: 403 }
       );
     }
 
+    // =========================================================
+    // SUSPENDED
+    // =========================================================
+
     if (user.status === 'SUSPENDED') {
       return NextResponse.json(
         {
           success: false,
-          message: 'Ваш акаунт тимчасово призупинений',
+          code: 'ACCOUNT_SUSPENDED',
+          message:
+            'Ваш акаунт тимчасово призупинений',
         },
         { status: 403 }
       );
     }
+
+    // =========================================================
+    // PASSWORD
+    // =========================================================
 
     const passwordValid = await bcrypt.compare(
       password,
@@ -91,6 +117,32 @@ export async function POST(request: Request) {
       );
     }
 
+    // =========================================================
+    // EMAIL VERIFICATION
+    // =========================================================
+    //
+    // ВАЖЛИВО:
+    // до цього моменту пароль вже перевірений.
+    //
+    // Але сесію НЕ створюємо, якщо email не підтверджений.
+    //
+
+    if (!user.emailVerifiedAt) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: 'EMAIL_NOT_VERIFIED',
+          message:
+            'Спочатку підтвердьте вашу електронну адресу.',
+        },
+        { status: 403 }
+      );
+    }
+
+    // =========================================================
+    // LOGIN SUCCESS
+    // =========================================================
+
     await db.user.update({
       where: {
         id: user.id,
@@ -100,7 +152,15 @@ export async function POST(request: Request) {
       },
     });
 
+    // =========================================================
+    // CREATE SESSION
+    // =========================================================
+
     await createSession(user.id);
+
+    // =========================================================
+    // RESPONSE
+    // =========================================================
 
     return NextResponse.json({
       success: true,
@@ -112,6 +172,7 @@ export async function POST(request: Request) {
         role: user.role,
         status: user.status,
         isBlocked: user.isBlocked,
+        emailVerifiedAt: user.emailVerifiedAt,
       },
     });
   } catch (error) {

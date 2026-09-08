@@ -223,13 +223,16 @@ enum WishlistType {
  */
 
 model User {
-  id           String     @id @default(cuid())
-  email        String     @unique
-  phone        String?    @unique
+  id           String  @id @default(uuid())
+  email        String  @unique
+  phone        String? @unique
   passwordHash String
-  name         String?
-  role         Role       @default(CUSTOMER)
-  status       UserStatus @default(ACTIVE)
+
+  name String?
+
+  role Role @default(CUSTOMER)
+
+  status UserStatus @default(ACTIVE)
 
   isBlocked     Boolean   @default(false)
   blockedAt     DateTime?
@@ -238,58 +241,121 @@ model User {
   lastLoginAt DateTime?
   lastLoginIp String?
 
+  emailVerifiedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  avatar   UserAvatar?
-  sessions Session[]
+  // --------------------------
+  // PROFILE
+  // --------------------------
 
+  avatar    UserAvatar?
   addresses Address[]
 
-  shop              Shop?
-  sellerApplication SellerApplication?
+  // --------------------------
+  // SELLER
+  // --------------------------
 
-  cart     Cart?
-  wishlist Wishlist?
+  shop Shop?
 
+  // --------------------------
+  // AUTH
+  // --------------------------
+
+  sessions Session[]
+
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+
+  // --------------------------
+  // SHOPPING
+  // --------------------------
+
+  cart          Cart?
+  wishlist      Wishlist?
   favorites     FavoriteProduct[]
-  favoriteShops FavoriteShop[]
-
   searchHistory SearchHistory[]
-  productViews  ProductView[]
-  shopViews     ShopView[]
+
+  // --------------------------
+  // ORDERS
+  // --------------------------
 
   orders   Order[]
   payments Payment[]
 
+  // --------------------------
+  // REVIEWS
+  // --------------------------
+
   productReviews ProductReview[]
   shopReviews    ShopReview[]
 
+  // --------------------------
+  // SHOP FOLLOWERS
+  // --------------------------
+
   shopFollowers ShopFollower[]
+
+  // --------------------------
+  // NOTIFICATIONS
+  // --------------------------
 
   notifications Notification[]
 
+  // --------------------------
+  // COUPONS
+  // --------------------------
+
   couponUsages CouponUsage[]
+
+  // --------------------------
+  // RETURNS
+  // --------------------------
 
   returnRequests ReturnRequest[]
 
-  reports Report[]
+  // --------------------------
+  // ADMIN
+  // --------------------------
 
   auditLogs AdminAuditLog[]
 
+  // --------------------------
+  // ANALYTICS
+  // --------------------------
+
   analyticsEvents AnalyticsEvent[]
+  productViews    ProductView[]
+  shopViews       ShopView[]
 
-  conversationsAsBuyer  Conversation[] @relation("ConversationBuyer")
-  conversationsAsSeller Conversation[] @relation("ConversationSeller")
+  // --------------------------
+  // REPORTS
+  // --------------------------
 
-  messages Message[]
+  reports Report[]
 
-  createdPromotions Promotion[] @relation("PromotionCreator")
+  // --------------------------
+  // PROMOTIONS / COUPONS / BANNERS
+  // --------------------------
 
-  createdBanners Banner[] @relation("BannerCreator")
+  promotionCreated Promotion[] @relation("PromotionCreator")
+  couponsCreated   Coupon[]    @relation("CouponCreator")
+  bannersCreated   Banner[]    @relation("BannerCreator")
 
-  createdCoupons      Coupon[]             @relation("CouponCreator")
-  passwordResetTokens PasswordResetToken[]
+  // --------------------------
+  // CHAT
+  // --------------------------
+
+  buyerConversations  Conversation[] @relation("ConversationBuyer")
+  sellerConversations Conversation[] @relation("ConversationSeller")
+  messages            Message[]
+
+  // --------------------------
+  // INDEXES
+  // --------------------------
+  sellerApplication SellerApplication?
+  favoriteShops     FavoriteShop[]
 
   @@index([role])
   @@index([status])
@@ -318,6 +384,20 @@ model Session {
   userAgent String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

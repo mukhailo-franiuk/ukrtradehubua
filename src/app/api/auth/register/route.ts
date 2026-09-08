@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 
 import { db } from '@/lib/prisma';
-import { createSession } from '@/lib/auth';
+import { createEmailVerification } from '@/lib/auth/email-verification';
+
+export const runtime = 'nodejs';
 
 export async function POST(request: Request) {
   try {
@@ -40,6 +42,10 @@ export async function POST(request: Request) {
         ? body.phone.trim()
         : null;
 
+    // ---------------------------------------------------------
+    // VALIDATION
+    // ---------------------------------------------------------
+
     if (!email || !password) {
       return NextResponse.json(
         {
@@ -60,30 +66,66 @@ export async function POST(request: Request) {
       );
     }
 
+    // ---------------------------------------------------------
+    // CHECK EXISTING USER
+    // ---------------------------------------------------------
+
     const existingUser = await db.user.findUnique({
       where: {
         email,
       },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        phone: true,
+        role: true,
+        status: true,
+        isBlocked: true,
+        emailVerifiedAt: true,
+      },
     });
 
     if (existingUser) {
+      // Якщо акаунт вже існує, але email не підтверджений
+      if (!existingUser.emailVerifiedAt) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'EMAIL_NOT_VERIFIED',
+            message:
+              'Акаунт з таким email вже існує, але email ще не підтверджено. Запросіть новий лист підтвердження.',
+          },
+          { status: 409 }
+        );
+      }
+
       return NextResponse.json(
         {
           success: false,
+          code: 'EMAIL_ALREADY_EXISTS',
           message: 'Користувач з таким email вже існує',
         },
         { status: 409 }
       );
     }
 
+    // ---------------------------------------------------------
+    // HASH PASSWORD
+    // ---------------------------------------------------------
+
     const passwordHash = await bcrypt.hash(password, 12);
+
+    // ---------------------------------------------------------
+    // CREATE USER
+    // ---------------------------------------------------------
 
     const user = await db.user.create({
       data: {
         email,
         passwordHash,
         name,
-        phone,
+        phone: phone || null,
         role: 'CUSTOMER',
         status: 'ACTIVE',
       },
@@ -95,16 +137,57 @@ export async function POST(request: Request) {
         role: true,
         status: true,
         isBlocked: true,
+        emailVerifiedAt: true,
         createdAt: true,
       },
     });
 
-    await createSession(user.id);
+    // ---------------------------------------------------------
+    // EMAIL VERIFICATION
+    // ---------------------------------------------------------
+    //
+    // Session НЕ створюємо.
+    //
+    // Спочатку користувач повинен підтвердити email.
+    //
+
+    try {
+      await createEmailVerification({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+      });
+
+      console.log(
+        `EMAIL VERIFICATION SENT: ${user.email}`
+      );
+    } catch (emailError) {
+      console.error(
+        `EMAIL VERIFICATION ERROR: ${user.email}`,
+        emailError
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          code: 'EMAIL_VERIFICATION_SEND_FAILED',
+          message:
+            'Акаунт створено, але не вдалося відправити лист підтвердження. Спробуйте запросити лист повторно.',
+        },
+        { status: 500 }
+      );
+    }
+
+    // ---------------------------------------------------------
+    // RESPONSE
+    // ---------------------------------------------------------
 
     return NextResponse.json(
       {
         success: true,
-        message: 'Реєстрація успішна',
+        code: 'EMAIL_VERIFICATION_REQUIRED',
+        message:
+          'Реєстрація успішна. Перевірте вашу електронну пошту та підтвердьте email.',
         user,
       },
       { status: 201 }
