@@ -1,153 +1,143 @@
 
-import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
+import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 
-import { db } from "@/lib/prisma";
+import { resetPasswordByToken } from "@/lib/auth/password-reset";
 
-export async function POST(request: NextRequest) {
+export const runtime = "nodejs";
+
+export async function POST(request: Request) {
   try {
     const body = await request.json();
 
     const token =
-      typeof body.token === "string"
-        ? body.token
+      typeof body?.token === "string"
+        ? body.token.trim()
         : "";
 
     const password =
-      typeof body.password === "string"
+      typeof body?.password === "string"
         ? body.password
         : "";
 
     if (!token) {
       return NextResponse.json(
         {
-          error:
-            "Посилання для відновлення пароля недійсне.",
+          success: false,
+          code: "TOKEN_REQUIRED",
+          message:
+            "Токен відновлення відсутній.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    if (password.length < 6) {
+    if (!password) {
       return NextResponse.json(
         {
-          error:
-            "Пароль повинен містити щонайменше 6 символів.",
+          success: false,
+          code: "PASSWORD_REQUIRED",
+          message:
+            "Введіть новий пароль.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    const tokenHash = crypto
-      .createHash("sha256")
-      .update(token)
-      .digest("hex");
-
-    const resetToken =
-      await db.passwordResetToken.findUnique({
-        where: {
-          tokenHash,
-        },
-
-        select: {
-          id: true,
-          userId: true,
-          expiresAt: true,
-        },
-      });
-
-    if (!resetToken) {
+    if (password.length < 8) {
       return NextResponse.json(
         {
-          error:
-            "Посилання для відновлення пароля недійсне або вже використане.",
+          success: false,
+          code: "PASSWORD_TOO_SHORT",
+          message:
+            "Пароль повинен містити щонайменше 8 символів.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    if (resetToken.expiresAt < new Date()) {
-      await db.passwordResetToken.delete({
-        where: {
-          id: resetToken.id,
-        },
-      });
-
+    if (password.length > 128) {
       return NextResponse.json(
         {
-          error:
-            "Термін дії посилання закінчився. Створіть новий запит.",
+          success: false,
+          code: "PASSWORD_TOO_LONG",
+          message:
+            "Пароль не може містити більше 128 символів.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
     const passwordHash =
       await bcrypt.hash(password, 12);
 
-    await db.$transaction([
-      db.user.update({
-        where: {
-          id: resetToken.userId,
-        },
+    const result =
+      await resetPasswordByToken(
+        token,
+        passwordHash
+      );
 
-        data: {
-          passwordHash,
-        },
-      }),
+    if (!result.success) {
+      switch (result.reason) {
+        case "EXPIRED":
+          return NextResponse.json(
+            {
+              success: false,
+              code: "PASSWORD_RESET_EXPIRED",
+              message:
+                "Термін дії посилання минув. Запросіть нове посилання.",
+            },
+            { status: 410 }
+          );
 
-      /*
-       * Виходимо з усіх старих пристроїв.
-       *
-       * Користувач після зміни пароля
-       * знову авторизується.
-       */
-      db.session.deleteMany({
-        where: {
-          userId: resetToken.userId,
-        },
-      }),
+        case "USED":
+          return NextResponse.json(
+            {
+              success: false,
+              code: "PASSWORD_RESET_USED",
+              message:
+                "Це посилання вже було використано.",
+            },
+            { status: 409 }
+          );
 
-      db.passwordResetToken.deleteMany({
-        where: {
-          userId: resetToken.userId,
-        },
-      }),
-    ]);
+        case "INVALID":
+        default:
+          return NextResponse.json(
+            {
+              success: false,
+              code: "PASSWORD_RESET_INVALID",
+              message:
+                "Посилання для відновлення пароля недійсне.",
+            },
+            { status: 400 }
+          );
+      }
+    }
 
     return NextResponse.json(
       {
+        success: true,
+        code: "PASSWORD_RESET_SUCCESS",
         message:
-          "Пароль успішно змінено. Тепер ви можете увійти.",
+          "Пароль успішно змінено. Увійдіть із новим паролем.",
       },
-      {
-        status: 200,
-      }
+      { status: 200 }
     );
   } catch (error) {
     console.error(
-      "Reset password error:",
+      "RESET PASSWORD ERROR:",
       error
     );
 
     return NextResponse.json(
       {
-        error:
+        success: false,
+        code: "PASSWORD_RESET_ERROR",
+        message:
           "Не вдалося змінити пароль. Спробуйте ще раз.",
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }
-

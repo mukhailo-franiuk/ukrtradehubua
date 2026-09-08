@@ -1,131 +1,103 @@
 
-import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
+import { NextResponse } from "next/server";
 
 import { db } from "@/lib/prisma";
-import { sendPasswordResetEmail } from "@/lib/mailer";
+import { createPasswordResetToken } from "@/lib/auth/password-reset";
 
-export async function POST(request: NextRequest) {
+export const runtime = "nodejs";
+
+export async function POST(request: Request) {
   try {
     const body = await request.json();
 
     const email =
-      typeof body.email === "string"
+      typeof body?.email === "string"
         ? body.email.trim().toLowerCase()
         : "";
 
+    /*
+     * Навіть при неправильному email
+     * повертаємо однакову відповідь.
+     */
     if (!email) {
       return NextResponse.json(
         {
-          error: "Введіть email.",
+          success: true,
+          message:
+            "Якщо акаунт з цією адресою існує, ми надіслали інструкції для відновлення пароля.",
         },
-        {
-          status: 400,
-        }
+        { status: 200 }
       );
     }
-
-    const genericResponse = {
-      message:
-        "Якщо акаунт із таким email існує, ми надішлемо інструкції для відновлення пароля.",
-    };
 
     const user = await db.user.findUnique({
       where: {
         email,
       },
-
-      select: {
-        id: true,
-        email: true,
-        name: true,
-      },
     });
 
     /*
-     * Не повідомляємо клієнту,
-     * чи існує конкретний email.
-     *
-     * Це захищає від account enumeration.
+     * Не розкриваємо інформацію про існування
+     * користувача.
      */
     if (!user) {
       return NextResponse.json(
-        genericResponse,
         {
-          status: 200,
-        }
+          success: true,
+          message:
+            "Якщо акаунт з цією адресою існує, ми надіслали інструкції для відновлення пароля.",
+        },
+        { status: 200 }
       );
     }
 
-    const token = crypto.randomBytes(32).toString("hex");
-
-    const tokenHash = crypto
-      .createHash("sha256")
-      .update(token)
-      .digest("hex");
-
-    const expiresAt = new Date(
-      Date.now() + 1000 * 60 * 30
-    );
-
     /*
-     * Видаляємо старі токени цього користувача.
-     *
-     * Одночасно буде активний тільки
-     * останній запит на відновлення.
+     * Заблокований користувач не отримує
+     * посилання на відновлення.
      */
-    await db.$transaction([
-      db.passwordResetToken.deleteMany({
-        where: {
-          userId: user.id,
+    if (user.isBlocked) {
+      return NextResponse.json(
+        {
+          success: true,
+          message:
+            "Якщо акаунт з цією адресою існує, ми надіслали інструкції для відновлення пароля.",
         },
-      }),
+        { status: 200 }
+      );
+    }
 
-      db.passwordResetToken.create({
-        data: {
-          userId: user.id,
-          tokenHash,
-          expiresAt,
-        },
-      }),
-    ]);
-
-    const appUrl =
-      process.env.NEXT_PUBLIC_APP_URL ||
-      "http://localhost:3000";
-
-    const resetUrl =
-      `${appUrl}/reset-password?token=${encodeURIComponent(
-        token
-      )}`;
-
-    await sendPasswordResetEmail({
+    await createPasswordResetToken({
+      id: user.id,
       email: user.email,
       name: user.name,
-      resetUrl,
     });
 
+    console.log(
+      `PASSWORD RESET EMAIL SENT: ${user.email}`
+    );
+
     return NextResponse.json(
-      genericResponse,
       {
-        status: 200,
-      }
+        success: true,
+        message:
+          "Якщо акаунт з цією адресою існує, ми надіслали інструкції для відновлення пароля.",
+      },
+      { status: 200 }
     );
   } catch (error) {
     console.error(
-      "Forgot password error:",
+      "FORGOT PASSWORD ERROR:",
       error
     );
 
     return NextResponse.json(
       {
-        error:
-          "Не вдалося обробити запит. Спробуйте ще раз пізніше.",
+        success: false,
+        code: "FORGOT_PASSWORD_ERROR",
+        message:
+          "Не вдалося обробити запит. Спробуйте ще раз.",
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }
-
