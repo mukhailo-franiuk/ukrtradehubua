@@ -1,34 +1,68 @@
+
 import nodemailer from "nodemailer";
 
-const smtpHost = process.env.SMTP_HOST;
-const smtpPort = Number(process.env.SMTP_PORT || 465);
-const smtpSecure = process.env.SMTP_SECURE !== "false";
-const smtpUser = process.env.SMTP_USER;
-const smtpPassword = process.env.SMTP_PASSWORD;
+function getSmtpConfig() {
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = Number(
+    process.env.SMTP_PORT || 465
+  );
+  const smtpSecure =
+    process.env.SMTP_SECURE !== "false";
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPassword =
+    process.env.SMTP_PASSWORD;
 
-if (!smtpHost || !smtpUser || !smtpPassword) {
-  throw new Error("SMTP environment variables are not configured");
+  if (
+    !smtpHost ||
+    !smtpUser ||
+    !smtpPassword
+  ) {
+    throw new Error(
+      "SMTP environment variables are not configured"
+    );
+  }
+
+  return {
+    host: smtpHost,
+    port: smtpPort,
+    secure: smtpSecure,
+    auth: {
+      user: smtpUser,
+      pass: smtpPassword,
+    },
+  };
 }
 
-export const emailTransporter = nodemailer.createTransport({
-  host: smtpHost,
-  port: smtpPort,
-  secure: smtpSecure,
+/**
+ * Створюємо transporter тільки тоді,
+ * коли він реально потрібен.
+ *
+ * Це важливо для Next.js build:
+ * SMTP env не повинні бути обов'язковими
+ * під час module evaluation.
+ */
+export const emailTransporter = {
+  sendMail(
+    options: nodemailer.SendMailOptions
+  ) {
+    const transporter =
+      nodemailer.createTransport(
+        getSmtpConfig()
+      );
 
-  auth: {
-    user: smtpUser,
-    pass: smtpPassword,
+    return transporter.sendMail(options);
   },
 
-  pool: true,
-  maxConnections: 5,
-  maxMessages: 100,
+  verify() {
+    const transporter =
+      nodemailer.createTransport(
+        getSmtpConfig()
+      );
 
-  connectionTimeout: 20_000,
-  greetingTimeout: 20_000,
-  socketTimeout: 60_000,
-});
+    return transporter.verify();
+  },
+};
 
 export const MAIL_FROM =
   process.env.MAIL_FROM ||
-  `"UkrTradeHub" <${smtpUser}>`;
+  `"UkrTradeHub" <support@ukrtradehub.com>`;
