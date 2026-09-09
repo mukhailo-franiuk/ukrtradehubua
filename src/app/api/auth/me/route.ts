@@ -28,6 +28,7 @@ export async function GET() {
         role: user.role,
         status: user.status,
         isBlocked: user.isBlocked,
+        emailVerifiedAt: user.emailVerifiedAt,
         createdAt: user.createdAt,
       },
     });
@@ -102,8 +103,11 @@ export async function PATCH(request: NextRequest) {
         ? body.email.trim().toLowerCase()
         : undefined;
 
-    const currentPassword = body.currentPassword ?? '';
-    const newPassword = body.newPassword ?? '';
+    const currentPassword =
+      body.currentPassword ?? '';
+
+    const newPassword =
+      body.newPassword ?? '';
 
     const data: {
       name?: string | null;
@@ -116,7 +120,10 @@ export async function PATCH(request: NextRequest) {
     // EMAIL
     // -------------------------------------------------
 
-    if (email !== undefined && email !== currentUser.email) {
+    if (
+      email !== undefined &&
+      email !== currentUser.email
+    ) {
       if (!email) {
         return NextResponse.json(
           {
@@ -127,19 +134,25 @@ export async function PATCH(request: NextRequest) {
         );
       }
 
-      const emailTaken = await db.user.findFirst({
-        where: {
-          email,
-          NOT: { id: currentUser.id },
-        },
-        select: { id: true },
-      });
+      const emailTaken =
+        await db.user.findFirst({
+          where: {
+            email,
+            NOT: {
+              id: currentUser.id,
+            },
+          },
+          select: {
+            id: true,
+          },
+        });
 
       if (emailTaken) {
         return NextResponse.json(
           {
             success: false,
-            message: 'Цей email вже використовується',
+            message:
+              'Цей email вже використовується',
           },
           { status: 409 }
         );
@@ -152,21 +165,30 @@ export async function PATCH(request: NextRequest) {
     // PHONE
     // -------------------------------------------------
 
-    if (phone !== undefined && phone !== currentUser.phone) {
+    if (
+      phone !== undefined &&
+      phone !== currentUser.phone
+    ) {
       if (phone) {
-        const phoneTaken = await db.user.findFirst({
-          where: {
-            phone,
-            NOT: { id: currentUser.id },
-          },
-          select: { id: true },
-        });
+        const phoneTaken =
+          await db.user.findFirst({
+            where: {
+              phone,
+              NOT: {
+                id: currentUser.id,
+              },
+            },
+            select: {
+              id: true,
+            },
+          });
 
         if (phoneTaken) {
           return NextResponse.json(
             {
               success: false,
-              message: 'Цей телефон вже використовується',
+              message:
+                'Цей телефон вже використовується',
             },
             { status: 409 }
           );
@@ -193,22 +215,25 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            message: 'Вкажіть поточний пароль',
+            message:
+              'Вкажіть поточний пароль',
           },
           { status: 400 }
         );
       }
 
-      const passwordValid = await bcrypt.compare(
-        currentPassword,
-        currentUser.passwordHash
-      );
+      const passwordValid =
+        await bcrypt.compare(
+          currentPassword,
+          currentUser.passwordHash
+        );
 
       if (!passwordValid) {
         return NextResponse.json(
           {
             success: false,
-            message: 'Поточний пароль невірний',
+            message:
+              'Поточний пароль невірний',
           },
           { status: 401 }
         );
@@ -218,52 +243,79 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            message: 'Новий пароль повинен містити мінімум 8 символів',
+            message:
+              'Новий пароль повинен містити мінімум 8 символів',
           },
           { status: 400 }
         );
       }
 
-      data.passwordHash = await bcrypt.hash(newPassword, 12);
+      data.passwordHash =
+        await bcrypt.hash(
+          newPassword,
+          12
+        );
     }
 
-    if (Object.keys(data).length === 0) {
+    // -------------------------------------------------
+    // NO CHANGES
+    // -------------------------------------------------
+
+    if (
+      Object.keys(data).length === 0
+    ) {
       return NextResponse.json(
         {
           success: false,
-          message: 'Немає змін для збереження',
+          message:
+            'Немає змін для збереження',
         },
         { status: 400 }
       );
     }
 
-    const updatedUser = await db.user.update({
-      where: { id: currentUser.id },
-      data,
-      select: {
-        id: true,
-        email: true,
-        phone: true,
-        name: true,
-        role: true,
-        status: true,
-        isBlocked: true,
-        createdAt: true,
-      },
-    });
+    // -------------------------------------------------
+    // UPDATE USER
+    // -------------------------------------------------
+
+    const updatedUser =
+      await db.user.update({
+        where: {
+          id: currentUser.id,
+        },
+
+        data,
+
+        select: {
+          id: true,
+          email: true,
+          phone: true,
+          name: true,
+          role: true,
+          status: true,
+          isBlocked: true,
+          emailVerifiedAt: true,
+          createdAt: true,
+        },
+      });
 
     return NextResponse.json({
       success: true,
       message: 'Профіль оновлено',
+
       user: updatedUser,
     });
   } catch (error) {
-    console.error('PATCH /api/auth/me error:', error);
+    console.error(
+      'PATCH /api/auth/me error:',
+      error
+    );
 
     return NextResponse.json(
       {
         success: false,
-        message: 'Не вдалося оновити профіль',
+        message:
+          'Не вдалося оновити профіль',
       },
       { status: 500 }
     );

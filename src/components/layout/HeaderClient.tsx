@@ -1,3 +1,4 @@
+
 "use client";
 
 import {
@@ -89,7 +90,8 @@ export default function HeaderClient({
      STATE
   ========================================================== */
 
-  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [user, setUser] =
+    useState<CurrentUser | null>(null);
 
   const [loadingUser, setLoadingUser] =
     useState(true);
@@ -174,23 +176,22 @@ export default function HeaderClient({
   ========================================================== */
 
   useEffect(() => {
-    if (
-      categories.length > 0 &&
-      !categories.some(
+    if (categories.length === 0) {
+      setActiveCategory(null);
+      return;
+    }
+
+    const currentExists =
+      categories.some(
         (category) =>
           category.id ===
           activeCategory?.id
-      )
-    ) {
+      );
+
+    if (!currentExists) {
       setActiveCategory(
         categories[0]
       );
-    }
-
-    if (
-      categories.length === 0
-    ) {
-      setActiveCategory(null);
     }
   }, [
     categories,
@@ -334,7 +335,7 @@ export default function HeaderClient({
         }
       );
     } catch {
-      // logout state handled below
+      // Стан очищаємо навіть якщо запит завершився помилкою.
     } finally {
       setUser(null);
       setAccountOpen(false);
@@ -366,6 +367,23 @@ export default function HeaderClient({
   const isSeller =
     user?.role === "SELLER";
 
+  const isAuthenticated =
+    Boolean(user);
+
+  /*
+   * CUSTOMER FEATURES
+   *
+   * Обране та Сповіщення:
+   * тільки авторизованим користувачам.
+   *
+   * Кошик:
+   * доступний усім, включно з гостями.
+   */
+
+  const showCustomerFeatures =
+    isAuthenticated &&
+    !isAdmin;
+
   /* ==========================================================
      RENDER
   ========================================================== */
@@ -386,6 +404,7 @@ export default function HeaderClient({
           <div className="mx-auto flex h-9 max-w-[1600px] items-center justify-between px-6 text-[12px]">
 
             <div className="flex items-center gap-6">
+
               <Link
                 href="/seller/register"
                 className="font-medium text-zinc-400 transition hover:text-amber-400"
@@ -413,9 +432,11 @@ export default function HeaderClient({
               >
                 Доставка та оплата
               </Link>
+
             </div>
 
             <div className="flex items-center gap-5 text-zinc-500">
+
               <Link
                 href="/about"
                 className="transition hover:text-white"
@@ -428,6 +449,7 @@ export default function HeaderClient({
                 className="flex items-center gap-1 transition hover:text-white"
               >
                 🇺🇦 Українська
+
                 <ChevronDown className="h-3 w-3" />
               </button>
 
@@ -436,8 +458,10 @@ export default function HeaderClient({
                 className="flex items-center gap-1 transition hover:text-white"
               >
                 UAH
+
                 <ChevronDown className="h-3 w-3" />
               </button>
+
             </div>
           </div>
         </div>
@@ -447,6 +471,7 @@ export default function HeaderClient({
         ==================================================== */}
 
         <div className="mx-auto max-w-[1600px] px-3 sm:px-5 lg:px-6">
+
           <div className="flex min-h-[76px] min-w-0 items-center gap-2 lg:gap-3">
 
             {/* =================================================
@@ -480,14 +505,17 @@ export default function HeaderClient({
               <div className="flex items-center gap-2.5">
 
                 <div className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-amber-400 shadow-lg shadow-amber-400/10">
+
                   <div className="absolute inset-0 bg-gradient-to-br from-white/30 to-transparent" />
 
                   <span className="relative text-xl font-black tracking-tight text-black">
                     U
                   </span>
+
                 </div>
 
                 <div className="hidden xl:block">
+
                   <div className="whitespace-nowrap text-[19px] font-black tracking-[-0.04em]">
                     Ukr
                     <span className="text-amber-400">
@@ -499,6 +527,7 @@ export default function HeaderClient({
                   <div className="mt-0.5 whitespace-nowrap text-[9px] font-medium uppercase tracking-[0.2em] text-zinc-600">
                     Marketplace Ukraine
                   </div>
+
                 </div>
               </div>
             </Link>
@@ -517,6 +546,7 @@ export default function HeaderClient({
                 );
 
                 setAccountOpen(false);
+                setMobileOpen(false);
               }}
               className={`hidden h-12 shrink-0 items-center gap-2 rounded-xl border px-3 text-sm font-bold transition xl:flex ${
                 catalogOpen
@@ -570,61 +600,71 @@ export default function HeaderClient({
                 >
                   Знайти
                 </button>
+
               </div>
             </form>
 
             {/* =================================================
                 RIGHT SIDE
-               
-                ВАЖЛИВО:
-               
-                Тут ДВА ПОВНІСТЮ ОКРЕМІ DIV:
-               
-                1. customerActions
-                   ♡ 🔔 🛒
-               
-                2. account
-                   👤 / Увійти
-               
-                Вони НЕ залежать один від одного.
             ================================================= */}
 
             <div className="ml-auto flex shrink-0 items-center">
 
               {/* =================================================
                   CUSTOMER ACTIONS
-                 
-                  ЦЕЙ DIV НІКОЛИ НЕ ЗАЛЕЖИТЬ ВІД USER.
-                 
-                  Не ховаємо його при loading.
-                  Не ховаємо його після logout.
-                  Не ховаємо його через accountOpen.
-                  Не ховаємо його через account dropdown.
+
+                  ГІСТЬ:
+                  🛒 Кошик
+
+                  CUSTOMER / SELLER:
+                  ❤️ Обране
+                  🔔 Сповіщення
+                  🛒 Кошик
+
+                  ADMIN:
+                  🛒 Кошик
+
+                  КОШИК ЗАВЖДИ ДОСТУПНИЙ.
               ================================================= */}
 
               <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
 
-                {/* WISHLIST */}
+                {/* =================================================
+                    FAVORITES
+                    Тільки авторизованому CUSTOMER / SELLER
+                ================================================= */}
 
-                <HeaderAction
-                  href="/wishlist"
-                  label="Обране"
-                  badge="0"
-                >
-                  <Heart className="h-[19px] w-[19px]" />
-                </HeaderAction>
+                {showCustomerFeatures && (
+                  <HeaderAction
+                    href="/account/favorites"
+                    label="Обране"
+                    badge="0"
+                  >
+                    <Heart className="h-[19px] w-[19px]" />
+                  </HeaderAction>
+                )}
 
-                {/* NOTIFICATIONS */}
+                {/* =================================================
+                    NOTIFICATIONS
+                    Тільки авторизованому CUSTOMER / SELLER
+                ================================================= */}
 
-                <HeaderAction
-                  href="/notifications"
-                  label="Сповіщення"
-                  dot
-                >
-                  <Bell className="h-[19px] w-[19px]" />
-                </HeaderAction>
+                {showCustomerFeatures && (
+                  <HeaderAction
+                    href="/account/notifications"
+                    label="Сповіщення"
+                    dot
+                  >
+                    <Bell className="h-[19px] w-[19px]" />
+                  </HeaderAction>
+                )}
 
-                {/* CART */}
+                {/* =================================================
+                    CART
+
+                    НІКОЛИ НЕ ЗАЛЕЖИТЬ ВІД USER.
+                    Працює для гостя.
+                ================================================= */}
 
                 <HeaderAction
                   href="/cart"
@@ -633,6 +673,7 @@ export default function HeaderClient({
                 >
                   <ShoppingCart className="h-[19px] w-[19px]" />
                 </HeaderAction>
+
               </div>
 
               {/* =================================================
@@ -643,20 +684,25 @@ export default function HeaderClient({
 
               {/* =================================================
                   ACCOUNT
-                 
-                  ОКРЕМИЙ DIV.
-                 
-                  Dropdown абсолютний.
-                  НІЯК НЕ ВПЛИВАЄ НА ACTIONS.
               ================================================= */}
 
               <div
                 ref={accountRef}
                 className="relative shrink-0"
               >
+
+                {/* =================================================
+                    LOADING
+                ================================================= */}
+
                 {loadingUser ? (
                   <div className="h-11 w-11 animate-pulse rounded-xl bg-white/[0.05] sm:w-12" />
                 ) : user ? (
+
+                  /* =================================================
+                     AUTHENTICATED
+                  ================================================= */
+
                   <>
                     <button
                       type="button"
@@ -673,6 +719,7 @@ export default function HeaderClient({
                       }}
                       className="flex h-11 shrink-0 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-1.5 transition hover:border-white/20 hover:bg-white/[0.08] sm:px-2 2xl:px-2.5"
                     >
+
                       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-400 text-xs font-black text-black">
                         {(
                           user.name ||
@@ -683,6 +730,7 @@ export default function HeaderClient({
                       </div>
 
                       <div className="hidden min-w-0 2xl:block 2xl:max-w-[120px]">
+
                         <div className="truncate text-xs font-bold text-white">
                           {user.name ||
                             "Мій акаунт"}
@@ -695,6 +743,7 @@ export default function HeaderClient({
                             ? "Продавець"
                             : "Особистий кабінет"}
                         </div>
+
                       </div>
 
                       <ChevronDown
@@ -704,6 +753,7 @@ export default function HeaderClient({
                             : ""
                         }`}
                       />
+
                     </button>
 
                     {/* =================================================
@@ -738,6 +788,7 @@ export default function HeaderClient({
                           {/* USER HEADER */}
 
                           <div className="border-b border-white/10 p-4">
+
                             <div className="flex items-center gap-3">
 
                               <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-400 font-black text-black">
@@ -750,6 +801,7 @@ export default function HeaderClient({
                               </div>
 
                               <div className="min-w-0 flex-1">
+
                                 <div className="truncate text-sm font-bold text-white">
                                   {user.name ||
                                     "Користувач"}
@@ -758,6 +810,7 @@ export default function HeaderClient({
                                 <div className="truncate text-xs text-zinc-500">
                                   {user.email}
                                 </div>
+
                               </div>
 
                             </div>
@@ -780,10 +833,16 @@ export default function HeaderClient({
                               }
                             />
 
+                            {/* =================================================
+                                CUSTOMER / SELLER ACCOUNT FEATURES
+
+                                ADMIN НЕ БАЧИТЬ ПОКУПЕЦЬКИХ ПУНКТІВ.
+                            ================================================= */}
+
                             {!isAdmin && (
                               <>
                                 <AccountLink
-                                  href="/orders"
+                                  href="/account/orders"
                                   icon={
                                     <ShoppingCart className="h-4 w-4" />
                                   }
@@ -796,7 +855,7 @@ export default function HeaderClient({
                                 />
 
                                 <AccountLink
-                                  href="/wishlist"
+                                  href="/account/favorites"
                                   icon={
                                     <Heart className="h-4 w-4" />
                                   }
@@ -809,7 +868,7 @@ export default function HeaderClient({
                                 />
 
                                 <AccountLink
-                                  href="/notifications"
+                                  href="/account/notifications"
                                   icon={
                                     <Bell className="h-4 w-4" />
                                   }
@@ -836,6 +895,10 @@ export default function HeaderClient({
                               </>
                             )}
 
+                            {/* =================================================
+                                SELLER
+                            ================================================= */}
+
                             {isSeller && (
                               <AccountLink
                                 href="/seller"
@@ -850,6 +913,10 @@ export default function HeaderClient({
                                 }
                               />
                             )}
+
+                            {/* =================================================
+                                ADMIN
+                            ================================================= */}
 
                             {isAdmin && (
                               <AccountLink
@@ -869,6 +936,8 @@ export default function HeaderClient({
 
                             <div className="my-2 border-t border-white/10" />
 
+                            {/* LOGOUT */}
+
                             <button
                               type="button"
                               onClick={logout}
@@ -882,9 +951,11 @@ export default function HeaderClient({
                       )}
                     </AnimatePresence>
                   </>
+
                 ) : (
+
                   /* =================================================
-                     LOGGED OUT
+                     GUEST
                   ================================================= */
 
                   <Link
@@ -899,6 +970,7 @@ export default function HeaderClient({
                     </span>
                   </Link>
                 )}
+
               </div>
             </div>
           </div>
@@ -965,9 +1037,11 @@ export default function HeaderClient({
         ==================================================== */}
 
         <div className="hidden border-t border-white/[0.05] lg:block">
+
           <div className="mx-auto flex h-11 max-w-[1600px] items-center px-6">
 
             <nav className="flex h-full items-center gap-1">
+
               {navigation.map(
                 (item) => {
                   const Icon =
@@ -997,12 +1071,17 @@ export default function HeaderClient({
 
                 <ChevronDown className="h-3.5 w-3.5" />
               </Link>
+
             </nav>
 
             <div className="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-zinc-600">
+
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+
               Український маркетплейс
+
             </div>
+
           </div>
         </div>
       </header>
@@ -1014,6 +1093,8 @@ export default function HeaderClient({
       <AnimatePresence>
         {catalogOpen && (
           <>
+            {/* OVERLAY */}
+
             <motion.div
               initial={{
                 opacity: 0,
@@ -1029,6 +1110,8 @@ export default function HeaderClient({
               }
               className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-[2px]"
             />
+
+            {/* MENU */}
 
             <motion.div
               initial={{
@@ -1050,7 +1133,9 @@ export default function HeaderClient({
             >
               <div className="mx-auto grid max-h-[calc(100vh-156px)] max-w-[1600px] grid-cols-[300px_1fr] overflow-y-auto px-6 py-7">
 
-                {/* LEFT */}
+                {/* =================================================
+                    LEFT
+                ================================================= */}
 
                 <div className="border-r border-white/10 pr-5">
 
@@ -1059,13 +1144,18 @@ export default function HeaderClient({
                   </div>
 
                   {categories.length === 0 ? (
+
                     <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 text-sm text-zinc-600">
                       Категорії поки що відсутні.
                     </div>
+
                   ) : (
+
                     <div className="space-y-1">
+
                       {categories.map(
                         (category) => {
+
                           const active =
                             activeCategory?.id ===
                             category.id;
@@ -1092,13 +1182,16 @@ export default function HeaderClient({
                                   : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"
                               }`}
                             >
+
                               <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-lg">
                                 {category.icon ||
                                   "📦"}
                               </span>
 
                               <span className="flex-1 text-sm font-semibold">
-                                {category.name}
+                                {
+                                  category.name
+                                }
                               </span>
 
                               <ChevronRight
@@ -1108,15 +1201,19 @@ export default function HeaderClient({
                                     : "text-zinc-700"
                                 }`}
                               />
+
                             </button>
                           );
                         }
                       )}
+
                     </div>
                   )}
                 </div>
 
-                {/* RIGHT */}
+                {/* =================================================
+                    RIGHT
+                ================================================= */}
 
                 {activeCategory && (
                   <div className="px-9">
@@ -1124,6 +1221,7 @@ export default function HeaderClient({
                     <div className="flex items-start justify-between gap-6">
 
                       <div>
+
                         <div className="flex items-center gap-3">
 
                           <span className="text-3xl">
@@ -1132,6 +1230,7 @@ export default function HeaderClient({
                           </span>
 
                           <div>
+
                             <h3 className="text-xl font-black text-white">
                               {
                                 activeCategory.name
@@ -1141,8 +1240,8 @@ export default function HeaderClient({
                             <p className="mt-1 text-xs text-zinc-600">
                               Підкатегорії та товари
                             </p>
-                          </div>
 
+                          </div>
                         </div>
                       </div>
 
@@ -1159,12 +1258,16 @@ export default function HeaderClient({
 
                         <ChevronRight className="h-4 w-4" />
                       </Link>
+
                     </div>
 
                     {activeCategory.children.length > 0 ? (
+
                       <div className="mt-7 grid grid-cols-3 gap-3">
+
                         {activeCategory.children.map(
                           (child) => (
+
                             <Link
                               key={
                                 child.id
@@ -1177,6 +1280,7 @@ export default function HeaderClient({
                               }
                               className="group flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-4 transition hover:border-amber-400/20 hover:bg-amber-400/[0.05]"
                             >
+
                               <span className="flex min-w-0 items-center gap-3">
 
                                 {child.icon && (
@@ -1192,32 +1296,45 @@ export default function HeaderClient({
                                     child.name
                                   }
                                 </span>
+
                               </span>
 
                               <ChevronRight className="h-4 w-4 shrink-0 text-zinc-700 transition group-hover:translate-x-1 group-hover:text-amber-400" />
+
                             </Link>
                           )
                         )}
+
                       </div>
+
                     ) : (
+
                       <div className="mt-7 rounded-xl border border-white/[0.05] bg-white/[0.02] p-5 text-sm text-zinc-600">
                         У цій категорії поки немає підкатегорій.
                       </div>
+
                     )}
+
+                    {/* HOT DEALS */}
 
                     <div className="mt-7 overflow-hidden rounded-2xl border border-amber-400/10 bg-gradient-to-r from-amber-400/[0.09] to-transparent p-5">
 
                       <div className="flex items-center justify-between gap-5">
 
                         <div>
+
                           <div className="flex items-center gap-2 text-sm font-black text-amber-300">
+
                             <Zap className="h-4 w-4" />
+
                             Гарячі пропозиції
+
                           </div>
 
                           <p className="mt-1 text-xs text-zinc-600">
                             Найкращі ціни на UkrTradeHub
                           </p>
+
                         </div>
 
                         <Link
@@ -1234,8 +1351,10 @@ export default function HeaderClient({
 
                       </div>
                     </div>
+
                   </div>
                 )}
+
               </div>
             </motion.div>
           </>
@@ -1249,6 +1368,8 @@ export default function HeaderClient({
       <AnimatePresence>
         {mobileOpen && (
           <>
+            {/* OVERLAY */}
+
             <motion.div
               initial={{
                 opacity: 0,
@@ -1264,6 +1385,8 @@ export default function HeaderClient({
               }
               className="fixed inset-0 z-[200] bg-black/70 backdrop-blur-sm lg:hidden"
             />
+
+            {/* DRAWER */}
 
             <motion.aside
               initial={{
@@ -1283,7 +1406,9 @@ export default function HeaderClient({
               className="fixed bottom-0 left-0 top-0 z-[210] w-[88%] max-w-[390px] overflow-y-auto border-r border-white/10 bg-[#080b11] lg:hidden"
             >
 
-              {/* DRAWER HEADER */}
+              {/* =================================================
+                  DRAWER HEADER
+              ================================================= */}
 
               <div className="flex h-[72px] items-center justify-between border-b border-white/10 px-4">
 
@@ -1311,15 +1436,21 @@ export default function HeaderClient({
                 >
                   <X className="h-5 w-5" />
                 </button>
+
               </div>
 
-              {/* ACCOUNT */}
+              {/* =================================================
+                  ACCOUNT
+              ================================================= */}
 
               <div className="border-b border-white/10 p-4">
 
                 {loadingUser ? (
+
                   <div className="h-16 animate-pulse rounded-xl bg-white/[0.04]" />
+
                 ) : user ? (
+
                   <div className="flex items-center gap-3 rounded-xl bg-white/[0.04] p-3">
 
                     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-400 font-black text-black">
@@ -1332,6 +1463,7 @@ export default function HeaderClient({
                     </div>
 
                     <div className="min-w-0">
+
                       <div className="truncate text-sm font-bold text-white">
                         {user.name ||
                           "Мій акаунт"}
@@ -1340,10 +1472,13 @@ export default function HeaderClient({
                       <div className="truncate text-xs text-zinc-600">
                         {user.email}
                       </div>
+
                     </div>
 
                   </div>
+
                 ) : (
+
                   <Link
                     href="/login"
                     onClick={() =>
@@ -1359,7 +1494,9 @@ export default function HeaderClient({
 
               </div>
 
-              {/* NAVIGATION */}
+              {/* =================================================
+                  NAVIGATION
+              ================================================= */}
 
               <nav className="p-4">
 
@@ -1402,21 +1539,45 @@ export default function HeaderClient({
                     }
                   />
 
-                  <MobileLink
-                    href="/wishlist"
-                    label="Обране"
-                    onClick={() =>
-                      setMobileOpen(false)
-                    }
-                  />
+                  {/* =================================================
+                      CUSTOMER FEATURES
 
-                  <MobileLink
-                    href="/notifications"
-                    label="Сповіщення"
-                    onClick={() =>
-                      setMobileOpen(false)
-                    }
-                  />
+                      Тільки авторизованому CUSTOMER / SELLER
+                  ================================================= */}
+
+                  {showCustomerFeatures && (
+                    <>
+                      <MobileLink
+                        href="/account/favorites"
+                        label="Обране"
+                        onClick={() =>
+                          setMobileOpen(false)
+                        }
+                      />
+
+                      <MobileLink
+                        href="/account/notifications"
+                        label="Сповіщення"
+                        onClick={() =>
+                          setMobileOpen(false)
+                        }
+                      />
+
+                      <MobileLink
+                        href="/account/orders"
+                        label="Мої замовлення"
+                        onClick={() =>
+                          setMobileOpen(false)
+                        }
+                      />
+                    </>
+                  )}
+
+                  {/* =================================================
+                      CART
+
+                      ЗАВЖДИ доступний.
+                  ================================================= */}
 
                   <MobileLink
                     href="/cart"
@@ -1426,25 +1587,24 @@ export default function HeaderClient({
                     }
                   />
 
-                  {!isAdmin && (
+                  {/* =================================================
+                      SELLER
+                  ================================================= */}
+
+                  {isSeller && (
                     <MobileLink
-                      href="/orders"
-                      label="Мої замовлення"
+                      href="/seller"
+                      label="Кабінет продавця"
+                      accent
                       onClick={() =>
                         setMobileOpen(false)
                       }
                     />
                   )}
 
-                  {isSeller && (
-                    <MobileLink
-                      href="/seller"
-                      label="Кабінет продавця"
-                      onClick={() =>
-                        setMobileOpen(false)
-                      }
-                    />
-                  )}
+                  {/* =================================================
+                      ADMIN
+                  ================================================= */}
 
                   {isAdmin && (
                     <MobileLink
@@ -1461,7 +1621,9 @@ export default function HeaderClient({
 
                 <div className="my-6 border-t border-white/10" />
 
-                {/* CATEGORIES */}
+                {/* =================================================
+                    CATEGORIES
+                ================================================= */}
 
                 <div className="mb-3 px-2 text-[10px] font-black uppercase tracking-[0.18em] text-zinc-600">
                   Категорії
@@ -1470,8 +1632,10 @@ export default function HeaderClient({
                 <div className="space-y-1">
 
                   {categories.length > 0 ? (
+
                     categories.map(
                       (category) => (
+
                         <Link
                           key={
                             category.id
@@ -1484,6 +1648,7 @@ export default function HeaderClient({
                           }
                           className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-zinc-400 transition hover:bg-white/[0.05] hover:text-white"
                         >
+
                           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-base">
                             {category.icon ||
                               "📦"}
@@ -1496,10 +1661,13 @@ export default function HeaderClient({
                           </span>
 
                           <ChevronRight className="h-4 w-4 shrink-0 text-zinc-700" />
+
                         </Link>
                       )
                     )
+
                   ) : (
+
                     <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 text-sm text-zinc-600">
                       Категорії поки що відсутні.
                     </div>
@@ -1509,7 +1677,9 @@ export default function HeaderClient({
 
                 <div className="my-6 border-t border-white/10" />
 
-                {/* HELP */}
+                {/* =================================================
+                    HELP
+                ================================================= */}
 
                 <div className="space-y-1">
 
@@ -1547,7 +1717,9 @@ export default function HeaderClient({
 
                 </div>
 
-                {/* LOGOUT */}
+                {/* =================================================
+                    LOGOUT
+                ================================================= */}
 
                 {user && (
                   <button

@@ -112,7 +112,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    let body: Record<string, unknown>;
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Некоректні дані запиту",
+        },
+        { status: 400 }
+      );
+    }
 
     const type: AddressType = isAddressType(body.type)
       ? body.type
@@ -130,7 +142,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const requestedDefault = Boolean(body.isDefault);
+    const requestedDefault = body.isDefault === true;
 
     const existingCount = await db.address.count({
       where: {
@@ -138,7 +150,8 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Перша адреса автоматично стає основною.
+    // Якщо це перша адреса або користувач явно
+    // попросив зробити її основною.
     const shouldBeDefault =
       existingCount === 0 || requestedDefault;
 

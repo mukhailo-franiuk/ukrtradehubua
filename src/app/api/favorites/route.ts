@@ -1,17 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/prisma";
 
-// =====================================================
-// TYPES
-// =====================================================
+import { db } from "@/lib/prisma";
 
 type AddFavoriteBody = {
   productId?: string;
 };
-
-// =====================================================
-// AUTH
-// =====================================================
 
 async function getCurrentUser(request: NextRequest) {
   const token = request.cookies.get("session_token")?.value;
@@ -33,7 +26,13 @@ async function getCurrentUser(request: NextRequest) {
     return null;
   }
 
-  if (session.expiresAt <= new Date()) {
+  if (session.expiresAt < new Date()) {
+    await db.session.delete({
+      where: {
+        id: session.id,
+      },
+    });
+
     return null;
   }
 
@@ -44,10 +43,13 @@ async function getCurrentUser(request: NextRequest) {
   return session.user;
 }
 
-// =====================================================
-// GET /api/favorites
-// =====================================================
-
+/*
+ * ============================================================
+ * GET /api/favorites
+ * ============================================================
+ *
+ * Отримує всі товари користувача з обраного.
+ */
 export async function GET(request: NextRequest) {
   try {
     const user = await getCurrentUser(request);
@@ -108,7 +110,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: "Не вдалося отримати обране",
+        error: "Не вдалося завантажити обране",
       },
       {
         status: 500,
@@ -117,16 +119,15 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// =====================================================
-// POST /api/favorites
-// =====================================================
-
+/*
+ * ============================================================
+ * POST /api/favorites
+ * ============================================================
+ *
+ * Додає товар до обраного.
+ */
 export async function POST(request: NextRequest) {
   try {
-    // -------------------------------------------------
-    // AUTH
-    // -------------------------------------------------
-
     const user = await getCurrentUser(request);
 
     if (!user) {
@@ -141,19 +142,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // -------------------------------------------------
-    // BODY
-    // -------------------------------------------------
-
     let body: AddFavoriteBody;
 
     try {
-      body = (await request.json()) as AddFavoriteBody;
+      body = await request.json();
     } catch {
       return NextResponse.json(
         {
           success: false,
-          error: "Некоректний JSON",
+          error: "Некоректне тіло запиту",
         },
         {
           status: 400,
@@ -161,7 +158,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const productId = body.productId?.trim();
+    const productId =
+      typeof body.productId === "string"
+        ? body.productId.trim()
+        : "";
 
     if (!productId) {
       return NextResponse.json(
@@ -174,10 +174,6 @@ export async function POST(request: NextRequest) {
         }
       );
     }
-
-    // -------------------------------------------------
-    // PRODUCT
-    // -------------------------------------------------
 
     const product = await db.product.findUnique({
       where: {
@@ -205,6 +201,7 @@ export async function POST(request: NextRequest) {
           orderBy: {
             sortOrder: "asc",
           },
+
           take: 1,
         },
       },
@@ -222,10 +219,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // -------------------------------------------------
-    // CHECK EXISTING
-    // -------------------------------------------------
-
     const existingFavorite =
       await db.favoriteProduct.findUnique({
         where: {
@@ -233,27 +226,6 @@ export async function POST(request: NextRequest) {
             userId: user.id,
             productId,
           },
-        },
-      });
-
-    if (existingFavorite) {
-      return NextResponse.json({
-        success: true,
-        message: "Товар вже є в обраному",
-        data: existingFavorite,
-        alreadyExists: true,
-      });
-    }
-
-    // -------------------------------------------------
-    // CREATE
-    // -------------------------------------------------
-
-    const favorite =
-      await db.favoriteProduct.create({
-        data: {
-          userId: user.id,
-          productId,
         },
 
         include: {
@@ -270,15 +242,48 @@ export async function POST(request: NextRequest) {
                   id: true,
                   name: true,
                   slug: true,
-                  rating: true,
-                  isActive: true,
-                  sellerStatus: true,
                 },
               },
             },
           },
         },
       });
+
+    if (existingFavorite) {
+      return NextResponse.json({
+        success: true,
+        message: "Товар вже є в обраному",
+        data: existingFavorite,
+        alreadyExists: true,
+      });
+    }
+
+    const favorite = await db.favoriteProduct.create({
+      data: {
+        userId: user.id,
+        productId,
+      },
+
+      include: {
+        product: {
+          include: {
+            images: {
+              orderBy: {
+                sortOrder: "asc",
+              },
+            },
+
+            shop: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+              },
+            },
+          },
+        },
+      },
+    });
 
     return NextResponse.json(
       {
@@ -291,34 +296,127 @@ export async function POST(request: NextRequest) {
         status: 201,
       }
     );
-  } catch (error) {
-    console.error("POST /api/favorites error:", error);
-
-    // -------------------------------------------------
-    // PRISMA UNIQUE
-    // -------------------------------------------------
-
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === "P2002"
-    ) {
-      return NextResponse.json(
-        {
-          success: true,
-          message: "Товар вже є в обраному",
-        },
-        {
-          status: 200,
-        }
-      );
+  } catch (error: any) {
+    /*
+     * Захист від race condition:
+     * @@unique([userId, productId])
+     */
+    if (error?.code === "P2002") {
+      return NextResponse.json({
+        success: true,
+        message: "Товар вже є в обраному",
+        alreadyExists: true,
+      });
     }
+
+    console.error("POST /api/favorites error:", error);
 
     return NextResponse.json(
       {
         success: false,
         error: "Не вдалося додати товар в обране",
+      },
+      {
+        status: 500,
+      }
+    );
+  }
+}
+
+/*
+ * ============================================================
+ * DELETE /api/favorites
+ * ============================================================
+ *
+ * Видаляє товар користувача з обраного.
+ *
+ * Body:
+ * {
+ *   productId: string
+ * }
+ *
+ * ВАЖЛИВО:
+ * Видалення завжди прив'язане до поточного userId.
+ * Користувач не може видалити FavoriteProduct іншого
+ * користувача.
+ */
+export async function DELETE(request: NextRequest) {
+  try {
+    const user = await getCurrentUser(request);
+
+    if (!user) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Необхідна авторизація",
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
+    let body: AddFavoriteBody;
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Некоректне тіло запиту",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const productId =
+      typeof body.productId === "string"
+        ? body.productId.trim()
+        : "";
+
+    if (!productId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "productId є обов'язковим",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const deleted =
+      await db.favoriteProduct.deleteMany({
+        where: {
+          userId: user.id,
+          productId,
+        },
+      });
+
+    if (deleted.count === 0) {
+      return NextResponse.json({
+        success: true,
+        message: "Товар не був в обраному",
+        removed: false,
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: "Товар видалено з обраного",
+      removed: true,
+    });
+  } catch (error) {
+    console.error("DELETE /api/favorites error:", error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: "Не вдалося видалити товар з обраного",
       },
       {
         status: 500,

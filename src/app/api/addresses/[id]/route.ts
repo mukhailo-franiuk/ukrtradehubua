@@ -70,6 +70,16 @@ export async function GET(
 
     const { id } = await context.params;
 
+    if (!id) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Не вказано ID адреси",
+        },
+        { status: 400 }
+      );
+    }
+
     const address = await db.address.findFirst({
       where: {
         id,
@@ -129,6 +139,16 @@ export async function PATCH(
 
     const { id } = await context.params;
 
+    if (!id) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Не вказано ID адреси",
+        },
+        { status: 400 }
+      );
+    }
+
     const existing = await db.address.findFirst({
       where: {
         id,
@@ -146,9 +166,25 @@ export async function PATCH(
       );
     }
 
-    const body = await request.json();
+    let body: Record<string, unknown>;
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Некоректні дані запиту",
+        },
+        { status: 400 }
+      );
+    }
 
     const data: Record<string, unknown> = {};
+
+    // -------------------------------------------------
+    // Type
+    // -------------------------------------------------
 
     if ("type" in body) {
       if (!isAddressType(body.type)) {
@@ -163,6 +199,10 @@ export async function PATCH(
 
       data.type = body.type;
     }
+
+    // -------------------------------------------------
+    // String fields
+    // -------------------------------------------------
 
     const stringFields = [
       "title",
@@ -186,9 +226,9 @@ export async function PATCH(
       }
     }
 
-    if ("isDefault" in body) {
-      data.isDefault = Boolean(body.isDefault);
-    }
+    // -------------------------------------------------
+    // City validation
+    // -------------------------------------------------
 
     if ("city" in body && !data.city) {
       return NextResponse.json(
@@ -200,7 +240,62 @@ export async function PATCH(
       );
     }
 
+    // -------------------------------------------------
+    // isDefault
+    // -------------------------------------------------
+
+    if ("isDefault" in body) {
+      if (typeof body.isDefault !== "boolean") {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Некоректне значення основної адреси",
+          },
+          { status: 400 }
+        );
+      }
+
+      data.isDefault = body.isDefault;
+    }
+
+    // -------------------------------------------------
+    // Не дозволяємо залишити користувача без
+    // основної адреси.
+    // -------------------------------------------------
+
+    if ("isDefault" in body && body.isDefault === false) {
+      const otherDefault = await db.address.findFirst({
+        where: {
+          userId: user.id,
+          id: {
+            not: id,
+          },
+          isDefault: true,
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      // Якщо ця адреса є основною і іншої основної немає,
+      // не дозволяємо її зняти.
+      if (existing.isDefault && !otherDefault) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "У вас повинна залишатися хоча б одна основна адреса.",
+          },
+          { status: 400 }
+        );
+      }
+    }
+
     const makeDefault = data.isDefault === true;
+
+    // -------------------------------------------------
+    // Оновлення
+    // -------------------------------------------------
 
     const address = await db.$transaction(async (tx) => {
       if (makeDefault) {
@@ -268,6 +363,16 @@ export async function DELETE(
 
     const { id } = await context.params;
 
+    if (!id) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Не вказано ID адреси",
+        },
+        { status: 400 }
+      );
+    }
+
     const address = await db.address.findFirst({
       where: {
         id,
@@ -285,7 +390,11 @@ export async function DELETE(
       );
     }
 
-    // Адреса вже використовується в замовленні.
+    // -------------------------------------------------
+    // Перевіряємо, чи використовується адреса
+    // в історії замовлень.
+    // -------------------------------------------------
+
     const usedByOrders = await db.order.count({
       where: {
         userId: user.id,
@@ -311,16 +420,21 @@ export async function DELETE(
         },
       });
 
-      // Якщо видалили основну адресу —
-      // автоматично призначаємо іншу основною.
+      // -------------------------------------------------
+      // Якщо видалили основну адресу — вибираємо
+      // найновішу адресу, що залишилася.
+      // -------------------------------------------------
+
       if (address.isDefault) {
         const nextAddress = await tx.address.findFirst({
           where: {
             userId: user.id,
           },
-          orderBy: {
-            createdAt: "desc",
-          },
+          orderBy: [
+            {
+              createdAt: "desc",
+            },
+          ],
         });
 
         if (nextAddress) {

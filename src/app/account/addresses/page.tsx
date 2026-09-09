@@ -1,32 +1,35 @@
 "use client";
 
 import {
-  useCallback,
+  FormEvent,
   useEffect,
   useState,
-  type FormEvent,
 } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
   Check,
-  CheckCircle2,
-  ChevronRight,
   Edit3,
   Home,
   Loader2,
   MapPin,
   Plus,
   Save,
+  Star,
   Trash2,
-  Truck,
+  User,
   X,
+  Phone,
+  Warehouse,
 } from "lucide-react";
+
+type AddressType = "SHIPPING" | "BILLING" | "BOTH";
 
 type Address = {
   id: string;
   userId: string;
-  type: "SHIPPING" | "BILLING" | "BOTH";
+  type: AddressType;
+  title: string | null;
 
   firstName: string | null;
   lastName: string | null;
@@ -34,17 +37,15 @@ type Address = {
 
   country: string | null;
   region: string | null;
-  district: string | null;
   city: string | null;
-
-  street: string | null;
-  house: string | null;
-  apartment: string | null;
-
   postalCode: string | null;
 
-  novaPoshtaCityRef: string | null;
-  novaPoshtaWarehouseRef: string | null;
+  street: string | null;
+  building: string | null;
+  apartment: string | null;
+
+  novaPoshtaWarehouse: string | null;
+  novaPoshtaRef: string | null;
 
   isDefault: boolean;
 
@@ -53,7 +54,8 @@ type Address = {
 };
 
 type AddressForm = {
-  type: Address["type"];
+  type: AddressType;
+  title: string;
 
   firstName: string;
   lastName: string;
@@ -61,23 +63,22 @@ type AddressForm = {
 
   country: string;
   region: string;
-  district: string;
   city: string;
-
-  street: string;
-  house: string;
-  apartment: string;
-
   postalCode: string;
 
-  novaPoshtaCityRef: string;
-  novaPoshtaWarehouseRef: string;
+  street: string;
+  building: string;
+  apartment: string;
+
+  novaPoshtaWarehouse: string;
+  novaPoshtaRef: string;
 
   isDefault: boolean;
 };
 
-const EMPTY_FORM: AddressForm = {
+const emptyForm: AddressForm = {
   type: "SHIPPING",
+  title: "",
 
   firstName: "",
   lastName: "",
@@ -85,56 +86,44 @@ const EMPTY_FORM: AddressForm = {
 
   country: "Україна",
   region: "",
-  district: "",
   city: "",
-
-  street: "",
-  house: "",
-  apartment: "",
-
   postalCode: "",
 
-  novaPoshtaCityRef: "",
-  novaPoshtaWarehouseRef: "",
+  street: "",
+  building: "",
+  apartment: "",
+
+  novaPoshtaWarehouse: "",
+  novaPoshtaRef: "",
 
   isDefault: false,
 };
 
-function addressToForm(address: Address): AddressForm {
-  return {
-    type: address.type,
+function getTypeLabel(type: AddressType) {
+  switch (type) {
+    case "SHIPPING":
+      return "Адреса доставки";
 
-    firstName: address.firstName ?? "",
-    lastName: address.lastName ?? "",
-    phone: address.phone ?? "",
+    case "BILLING":
+      return "Платіжна адреса";
 
-    country: address.country ?? "Україна",
-    region: address.region ?? "",
-    district: address.district ?? "",
-    city: address.city ?? "",
+    case "BOTH":
+      return "Доставка та оплата";
 
-    street: address.street ?? "",
-    house: address.house ?? "",
-    apartment: address.apartment ?? "",
-
-    postalCode: address.postalCode ?? "",
-
-    novaPoshtaCityRef: address.novaPoshtaCityRef ?? "",
-    novaPoshtaWarehouseRef:
-      address.novaPoshtaWarehouseRef ?? "",
-
-    isDefault: address.isDefault,
-  };
+    default:
+      return "Адреса";
+  }
 }
 
 function formatAddress(address: Address) {
   const parts = [
     address.country,
     address.region,
-    address.district,
     address.city,
     address.street,
-    address.house,
+    address.building
+      ? `буд. ${address.building}`
+      : null,
     address.apartment
       ? `кв. ${address.apartment}`
       : null,
@@ -142,6 +131,18 @@ function formatAddress(address: Address) {
   ].filter(Boolean);
 
   return parts.join(", ");
+}
+
+function getAddressTitle(address: Address) {
+  if (address.title?.trim()) {
+    return address.title.trim();
+  }
+
+  if (address.city) {
+    return address.city;
+  }
+
+  return "Моя адреса";
 }
 
 export default function AddressesPage() {
@@ -153,7 +154,7 @@ export default function AddressesPage() {
     null
   );
 
-  const [form, setForm] = useState<AddressForm>(EMPTY_FORM);
+  const [form, setForm] = useState<AddressForm>(emptyForm);
 
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(
@@ -164,21 +165,23 @@ export default function AddressesPage() {
   );
 
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(
+    null
+  );
 
   // =====================================================
-  // LOAD
+  // LOAD ADDRESSES
   // =====================================================
 
-  const loadAddresses = useCallback(async () => {
+  async function loadAddresses() {
     try {
       setLoading(true);
       setError(null);
 
       const response = await fetch("/api/addresses", {
         method: "GET",
-        cache: "no-store",
         credentials: "include",
+        cache: "no-store",
       });
 
       if (response.status === 401) {
@@ -187,15 +190,15 @@ export default function AddressesPage() {
         return;
       }
 
-      const json = await response.json();
+      const result = await response.json();
 
-      if (!response.ok || !json.success) {
+      if (!response.ok || !result.success) {
         throw new Error(
-          json.error || "Не вдалося завантажити адреси"
+          result.error || "Не вдалося завантажити адреси"
         );
       }
 
-      setAddresses(json.data ?? []);
+      setAddresses(result.data ?? []);
     } catch (err) {
       console.error(err);
 
@@ -207,11 +210,11 @@ export default function AddressesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }
 
   useEffect(() => {
     loadAddresses();
-  }, [loadAddresses]);
+  }, []);
 
   // =====================================================
   // FORM
@@ -219,10 +222,12 @@ export default function AddressesPage() {
 
   function openCreateForm() {
     setEditingId(null);
+
     setForm({
-      ...EMPTY_FORM,
+      ...emptyForm,
       isDefault: addresses.length === 0,
     });
+
     setError(null);
     setSuccess(null);
     setShowForm(true);
@@ -230,15 +235,35 @@ export default function AddressesPage() {
 
   function openEditForm(address: Address) {
     setEditingId(address.id);
-    setForm(addressToForm(address));
+
+    setForm({
+      type: address.type,
+      title: address.title ?? "",
+
+      firstName: address.firstName ?? "",
+      lastName: address.lastName ?? "",
+      phone: address.phone ?? "",
+
+      country: address.country ?? "Україна",
+      region: address.region ?? "",
+      city: address.city ?? "",
+      postalCode: address.postalCode ?? "",
+
+      street: address.street ?? "",
+      building: address.building ?? "",
+      apartment: address.apartment ?? "",
+
+      novaPoshtaWarehouse:
+        address.novaPoshtaWarehouse ?? "",
+
+      novaPoshtaRef: address.novaPoshtaRef ?? "",
+
+      isDefault: address.isDefault,
+    });
+
     setError(null);
     setSuccess(null);
     setShowForm(true);
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    });
   }
 
   function closeForm() {
@@ -246,7 +271,7 @@ export default function AddressesPage() {
 
     setShowForm(false);
     setEditingId(null);
-    setForm(EMPTY_FORM);
+    setForm(emptyForm);
   }
 
   function updateField<K extends keyof AddressForm>(
@@ -276,9 +301,40 @@ export default function AddressesPage() {
       return;
     }
 
-    setSaving(true);
-
     try {
+      setSaving(true);
+
+      const payload = {
+        type: form.type,
+        title: form.title.trim() || null,
+
+        firstName: form.firstName.trim() || null,
+        lastName: form.lastName.trim() || null,
+        phone: form.phone.trim() || null,
+
+        country:
+          form.country.trim() || "Україна",
+
+        region: form.region.trim() || null,
+        city: form.city.trim(),
+
+        postalCode:
+          form.postalCode.trim() || null,
+
+        street: form.street.trim() || null,
+        building: form.building.trim() || null,
+        apartment:
+          form.apartment.trim() || null,
+
+        novaPoshtaWarehouse:
+          form.novaPoshtaWarehouse.trim() || null,
+
+        novaPoshtaRef:
+          form.novaPoshtaRef.trim() || null,
+
+        isDefault: form.isDefault,
+      };
+
       const url = editingId
         ? `/api/addresses/${editingId}`
         : "/api/addresses";
@@ -287,36 +343,11 @@ export default function AddressesPage() {
 
       const response = await fetch(url, {
         method,
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
-        credentials: "include",
-        body: JSON.stringify({
-          type: form.type,
-
-          firstName: form.firstName.trim(),
-          lastName: form.lastName.trim(),
-          phone: form.phone.trim(),
-
-          country: form.country.trim(),
-          region: form.region.trim(),
-          district: form.district.trim(),
-          city: form.city.trim(),
-
-          street: form.street.trim(),
-          house: form.house.trim(),
-          apartment: form.apartment.trim(),
-
-          postalCode: form.postalCode.trim(),
-
-          novaPoshtaCityRef:
-            form.novaPoshtaCityRef.trim(),
-
-          novaPoshtaWarehouseRef:
-            form.novaPoshtaWarehouseRef.trim(),
-
-          isDefault: form.isDefault,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (response.status === 401) {
@@ -325,29 +356,25 @@ export default function AddressesPage() {
         return;
       }
 
-      const json = await response.json();
+      const result = await response.json();
 
-      if (!response.ok || !json.success) {
+      if (!response.ok || !result.success) {
         throw new Error(
-          json.error || "Не вдалося зберегти адресу"
+          result.error || "Не вдалося зберегти адресу"
         );
       }
 
-      setSuccess(
-        editingId
-          ? "Адресу успішно оновлено."
-          : "Адресу успішно додано."
-      );
+      if (editingId) {
+        setSuccess("Адресу успішно оновлено.");
+      } else {
+        setSuccess("Адресу успішно додано.");
+      }
 
       setShowForm(false);
       setEditingId(null);
-      setForm(EMPTY_FORM);
+      setForm(emptyForm);
 
       await loadAddresses();
-
-      window.setTimeout(() => {
-        setSuccess(null);
-      }, 3500);
     } catch (err) {
       console.error(err);
 
@@ -362,25 +389,23 @@ export default function AddressesPage() {
   }
 
   // =====================================================
-  // DEFAULT
+  // DEFAULT ADDRESS
   // =====================================================
 
-  async function makeDefault(addressId: string) {
-    if (defaultId === addressId) return;
-
-    setDefaultId(addressId);
-    setError(null);
-    setSuccess(null);
-
+  async function makeDefault(id: string) {
     try {
+      setDefaultId(id);
+      setError(null);
+      setSuccess(null);
+
       const response = await fetch(
-        `/api/addresses/${addressId}`,
+        `/api/addresses/${id}`,
         {
           method: "PATCH",
+          credentials: "include",
           headers: {
             "Content-Type": "application/json",
           },
-          credentials: "include",
           body: JSON.stringify({
             isDefault: true,
           }),
@@ -393,27 +418,18 @@ export default function AddressesPage() {
         return;
       }
 
-      const json = await response.json();
+      const result = await response.json();
 
-      if (!response.ok || !json.success) {
+      if (!response.ok || !result.success) {
         throw new Error(
-          json.error ||
-            "Не вдалося змінити основну адресу"
+          result.error ||
+            "Не вдалося зробити адресу основною"
         );
       }
 
-      setAddresses((current) =>
-        current.map((address) => ({
-          ...address,
-          isDefault: address.id === addressId,
-        }))
-      );
-
       setSuccess("Основну адресу змінено.");
 
-      window.setTimeout(() => {
-        setSuccess(null);
-      }, 3000);
+      await loadAddresses();
     } catch (err) {
       console.error(err);
 
@@ -433,18 +449,18 @@ export default function AddressesPage() {
 
   async function deleteAddress(address: Address) {
     const confirmed = window.confirm(
-      address.isDefault
-        ? "Ви дійсно хочете видалити основну адресу?"
-        : "Ви дійсно хочете видалити цю адресу?"
+      `Видалити адресу "${getAddressTitle(
+        address
+      )}"?\n\nЦю дію неможливо скасувати.`
     );
 
     if (!confirmed) return;
 
-    setDeletingId(address.id);
-    setError(null);
-    setSuccess(null);
-
     try {
+      setDeletingId(address.id);
+      setError(null);
+      setSuccess(null);
+
       const response = await fetch(
         `/api/addresses/${address.id}`,
         {
@@ -459,21 +475,18 @@ export default function AddressesPage() {
         return;
       }
 
-      const json = await response.json();
+      const result = await response.json();
 
-      if (!response.ok || !json.success) {
+      if (!response.ok || !result.success) {
         throw new Error(
-          json.error || "Не вдалося видалити адресу"
+          result.error ||
+            "Не вдалося видалити адресу"
         );
       }
 
-      await loadAddresses();
-
       setSuccess("Адресу видалено.");
 
-      window.setTimeout(() => {
-        setSuccess(null);
-      }, 3000);
+      await loadAddresses();
     } catch (err) {
       console.error(err);
 
@@ -488,116 +501,134 @@ export default function AddressesPage() {
   }
 
   // =====================================================
-  // LOADING
+  // FIELD
   // =====================================================
 
-  if (loading) {
+  function Field({
+    label,
+    value,
+    onChange,
+    placeholder,
+    required = false,
+    type = "text",
+  }: {
+    label: string;
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+    required?: boolean;
+    type?: string;
+  }) {
     return (
-      <main className="min-h-screen bg-zinc-950 text-white">
-        <div className="mx-auto flex min-h-[70vh] max-w-7xl items-center justify-center px-4">
-          <div className="flex items-center gap-3 text-zinc-400">
-            <Loader2 className="h-6 w-6 animate-spin" />
-            <span>Завантаження адрес...</span>
-          </div>
-        </div>
-      </main>
+      <label className="block">
+        <span className="mb-2 block text-sm font-medium text-gray-300">
+          {label}
+          {required && (
+            <span className="ml-1 text-amber-400">*</span>
+          )}
+        </span>
+
+        <input
+          type={type}
+          value={value}
+          required={required}
+          onChange={(event) =>
+            onChange(event.target.value)
+          }
+          placeholder={placeholder}
+          className="w-full rounded-xl border border-white/10 bg-[#0b0f17] px-4 py-3 text-sm text-white outline-none transition placeholder:text-gray-600 focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/10"
+        />
+      </label>
     );
   }
 
   // =====================================================
-  // PAGE
+  // RENDER
   // =====================================================
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-white">
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Breadcrumb */}
-        <div className="mb-6 flex items-center gap-2 text-sm text-zinc-500">
+    <div className="min-h-screen bg-[#0b0f17] text-white">
+      <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+        {/* HEADER */}
+
+        <div className="mb-8">
           <Link
             href="/account"
-            className="transition hover:text-white"
+            className="mb-5 inline-flex items-center gap-2 text-sm text-gray-400 transition hover:text-white"
           >
-            Мій акаунт
+            <ArrowLeft size={17} />
+            Назад до кабінету
           </Link>
 
-          <ChevronRight className="h-4 w-4" />
-
-          <span className="text-zinc-300">
-            Адреси доставки
-          </span>
-        </div>
-
-        {/* Header */}
-        <div className="mb-8 flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <div className="mb-3 flex items-center gap-3">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-400/20 bg-amber-400/10">
-                <MapPin className="h-6 w-6 text-amber-400" />
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-400/20 bg-amber-400/10">
+                <MapPin
+                  size={24}
+                  className="text-amber-400"
+                />
               </div>
 
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
-                  Адреси доставки
-                </h1>
+              <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Мої адреси
+              </h1>
 
-                <p className="mt-1 text-sm text-zinc-500">
-                  Збережені адреси для швидкого оформлення
-                  замовлень
-                </p>
-              </div>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-400 sm:text-base">
+                Керуйте адресами доставки та
+                збереженими адресами для оформлення
+                замовлень.
+              </p>
             </div>
-          </div>
 
-          {!showForm && (
-            <button
-              type="button"
-              onClick={openCreateForm}
-              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-amber-400 px-5 font-semibold text-zinc-950 transition hover:bg-amber-300"
-            >
-              <Plus className="h-5 w-5" />
-              Додати адресу
-            </button>
-          )}
+            {!showForm && (
+              <button
+                type="button"
+                onClick={openCreateForm}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-amber-400 px-5 py-3 text-sm font-bold text-black transition hover:bg-amber-300"
+              >
+                <Plus size={18} />
+                Додати адресу
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Alerts */}
+        {/* ALERTS */}
+
         {error && (
           <div className="mb-6 flex items-start gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-4 text-sm text-red-300">
-            <X className="mt-0.5 h-5 w-5 shrink-0" />
-
-            <div className="flex-1">{error}</div>
-
-            <button
-              type="button"
-              onClick={() => setError(null)}
-              className="text-red-400 transition hover:text-red-200"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <X size={18} className="mt-0.5 shrink-0" />
+            <span>{error}</span>
           </div>
         )}
 
         {success && (
           <div className="mb-6 flex items-start gap-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-4 text-sm text-emerald-300">
-            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" />
-
-            <div>{success}</div>
+            <Check
+              size={18}
+              className="mt-0.5 shrink-0"
+            />
+            <span>{success}</span>
           </div>
         )}
 
-        {/* Form */}
+        {/* FORM */}
+
         {showForm && (
-          <section className="mb-8 overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/70 shadow-2xl shadow-black/20">
-            <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-5 sm:px-7">
+          <form
+            onSubmit={handleSubmit}
+            className="mb-8 overflow-hidden rounded-3xl border border-white/10 bg-[#111722] shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-5 sm:px-7">
               <div>
-                <h2 className="text-lg font-bold">
+                <h2 className="text-xl font-bold">
                   {editingId
                     ? "Редагування адреси"
                     : "Нова адреса"}
                 </h2>
 
-                <p className="mt-1 text-sm text-zinc-500">
-                  Введіть дані для доставки замовлень
+                <p className="mt-1 text-sm text-gray-500">
+                  Заповніть дані адреси доставки.
                 </p>
               </div>
 
@@ -605,27 +636,90 @@ export default function AddressesPage() {
                 type="button"
                 onClick={closeForm}
                 disabled={saving}
-                className="flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-800 text-zinc-400 transition hover:bg-zinc-700 hover:text-white disabled:opacity-50"
+                className="rounded-xl p-2 text-gray-400 transition hover:bg-white/5 hover:text-white disabled:opacity-50"
               >
-                <X className="h-5 w-5" />
+                <X size={20} />
               </button>
             </div>
 
-            <form
-              onSubmit={handleSubmit}
-              className="space-y-7 p-5 sm:p-7"
-            >
-              {/* Recipient */}
-              <div>
-                <div className="mb-4 flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-amber-400" />
+            <div className="space-y-8 p-5 sm:p-7">
+              {/* BASIC */}
 
-                  <h3 className="font-semibold">
-                    Отримувач
-                  </h3>
+              <section>
+                <div className="mb-5 flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-400/10 text-amber-400">
+                    <Home size={18} />
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold">
+                      Основна інформація
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      Назва та призначення адреси
+                    </p>
+                  </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-5 md:grid-cols-2">
+                  <Field
+                    label="Назва адреси"
+                    value={form.title}
+                    onChange={(value) =>
+                      updateField("title", value)
+                    }
+                    placeholder="Наприклад: Дім"
+                  />
+
+                  <label className="block">
+                    <span className="mb-2 block text-sm font-medium text-gray-300">
+                      Тип адреси
+                    </span>
+
+                    <select
+                      value={form.type}
+                      onChange={(event) =>
+                        updateField(
+                          "type",
+                          event.target
+                            .value as AddressType
+                        )
+                      }
+                      className="w-full rounded-xl border border-white/10 bg-[#0b0f17] px-4 py-3 text-sm text-white outline-none focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/10"
+                    >
+                      <option value="SHIPPING">
+                        Адреса доставки
+                      </option>
+                      <option value="BILLING">
+                        Платіжна адреса
+                      </option>
+                      <option value="BOTH">
+                        Доставка та оплата
+                      </option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+
+              {/* RECIPIENT */}
+
+              <section>
+                <div className="mb-5 flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-400/10 text-blue-400">
+                    <User size={18} />
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold">
+                      Отримувач
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      Дані людини, яка отримує замовлення
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid gap-5 md:grid-cols-2">
                   <Field
                     label="Ім'я"
                     value={form.firstName}
@@ -650,49 +744,31 @@ export default function AddressesPage() {
                     onChange={(value) =>
                       updateField("phone", value)
                     }
-                    placeholder="+380..."
+                    placeholder="+380 XX XXX XX XX"
                     type="tel"
                   />
-
-                  <Field
-                    label="Тип адреси"
-                    value={form.type}
-                    onChange={(value) =>
-                      updateField(
-                        "type",
-                        value as Address["type"]
-                      )
-                    }
-                    select
-                    options={[
-                      {
-                        value: "SHIPPING",
-                        label: "Адреса доставки",
-                      },
-                      {
-                        value: "BILLING",
-                        label: "Платіжна адреса",
-                      },
-                      {
-                        value: "BOTH",
-                        label: "Доставка та платіжна",
-                      },
-                    ]}
-                  />
                 </div>
-              </div>
+              </section>
 
-              {/* Location */}
-              <div>
-                <div className="mb-4 flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-amber-400" />
+              {/* LOCATION */}
 
-                  <h3 className="font-semibold">
-                    Місцезнаходження
-                  </h3>
+              <section>
+                <div className="mb-5 flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-400/10 text-emerald-400">
+                    <MapPin size={18} />
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold">
+                      Місцезнаходження
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      Країна, область та населений пункт
+                    </p>
+                  </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="grid gap-5 md:grid-cols-2">
                   <Field
                     label="Країна"
                     value={form.country}
@@ -712,16 +788,7 @@ export default function AddressesPage() {
                   />
 
                   <Field
-                    label="Район"
-                    value={form.district}
-                    onChange={(value) =>
-                      updateField("district", value)
-                    }
-                    placeholder="Район"
-                  />
-
-                  <Field
-                    label="Місто / населений пункт"
+                    label="Місто"
                     value={form.city}
                     onChange={(value) =>
                       updateField("city", value)
@@ -734,40 +801,57 @@ export default function AddressesPage() {
                     label="Поштовий індекс"
                     value={form.postalCode}
                     onChange={(value) =>
-                      updateField("postalCode", value)
+                      updateField(
+                        "postalCode",
+                        value
+                      )
                     }
                     placeholder="58000"
                   />
                 </div>
-              </div>
+              </section>
 
-              {/* Street */}
-              <div>
-                <div className="mb-4 flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-amber-400" />
+              {/* STREET */}
 
-                  <h3 className="font-semibold">
-                    Адреса
-                  </h3>
+              <section>
+                <div className="mb-5 flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-400/10 text-purple-400">
+                    <Home size={18} />
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold">
+                      Адреса
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      Вулиця та номер будинку
+                    </p>
+                  </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-3">
-                  <div className="sm:col-span-1">
+                <div className="grid gap-5 md:grid-cols-3">
+                  <div className="md:col-span-2">
                     <Field
                       label="Вулиця"
                       value={form.street}
                       onChange={(value) =>
-                        updateField("street", value)
+                        updateField(
+                          "street",
+                          value
+                        )
                       }
-                      placeholder="Головна"
+                      placeholder="вул. Головна"
                     />
                   </div>
 
                   <Field
                     label="Будинок"
-                    value={form.house}
+                    value={form.building}
                     onChange={(value) =>
-                      updateField("house", value)
+                      updateField(
+                        "building",
+                        value
+                      )
                     }
                     placeholder="25"
                   />
@@ -776,61 +860,66 @@ export default function AddressesPage() {
                     label="Квартира"
                     value={form.apartment}
                     onChange={(value) =>
-                      updateField("apartment", value)
+                      updateField(
+                        "apartment",
+                        value
+                      )
                     }
-                    placeholder="12"
+                    placeholder="42"
                   />
                 </div>
-              </div>
+              </section>
 
-              {/* Nova Poshta */}
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
-                <div className="mb-4 flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10">
-                    <Truck className="h-5 w-5 text-red-400" />
+              {/* NOVA POSHTA */}
+
+              <section>
+                <div className="mb-5 flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-red-400/10 text-red-400">
+                    <Warehouse size={18} />
                   </div>
 
                   <div>
                     <h3 className="font-semibold">
                       Нова пошта
                     </h3>
-
-                    <p className="text-xs text-zinc-500">
-                      Дані можна буде використовувати для
-                      доставки через Нову пошту
+                    <p className="text-xs text-gray-500">
+                      Дані відділення Нової пошти
                     </p>
                   </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-5 md:grid-cols-2">
                   <Field
-                    label="ID міста Нової пошти"
-                    value={form.novaPoshtaCityRef}
+                    label="Відділення"
+                    value={
+                      form.novaPoshtaWarehouse
+                    }
                     onChange={(value) =>
                       updateField(
-                        "novaPoshtaCityRef",
+                        "novaPoshtaWarehouse",
                         value
                       )
                     }
-                    placeholder="Ref міста"
+                    placeholder="Відділення №1"
                   />
 
                   <Field
-                    label="ID відділення Нової пошти"
-                    value={form.novaPoshtaWarehouseRef}
+                    label="Ref відділення"
+                    value={form.novaPoshtaRef}
                     onChange={(value) =>
                       updateField(
-                        "novaPoshtaWarehouseRef",
+                        "novaPoshtaRef",
                         value
                       )
                     }
-                    placeholder="Ref відділення"
+                    placeholder="UUID / Ref"
                   />
                 </div>
-              </div>
+              </section>
 
-              {/* Default */}
-              <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-zinc-800 bg-zinc-950/50 p-4 transition hover:border-zinc-700">
+              {/* DEFAULT */}
+
+              <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white/10 bg-[#0b0f17] p-4 transition hover:border-amber-400/30">
                 <input
                   type="checkbox"
                   checked={form.isDefault}
@@ -840,307 +929,310 @@ export default function AddressesPage() {
                       event.target.checked
                     )
                   }
-                  className="mt-1 h-5 w-5 rounded border-zinc-700 bg-zinc-900 accent-amber-400"
+                  className="mt-1 h-4 w-4 accent-amber-400"
                 />
 
-                <div>
-                  <div className="font-medium">
+                <span>
+                  <span className="block text-sm font-semibold text-white">
                     Зробити основною адресою
-                  </div>
+                  </span>
 
-                  <div className="mt-1 text-sm text-zinc-500">
-                    Ця адреса автоматично вибиратиметься під
-                    час оформлення замовлення.
-                  </div>
-                </div>
+                  <span className="mt-1 block text-xs leading-5 text-gray-500">
+                    Ця адреса буде автоматично
+                    вибиратися під час оформлення
+                    замовлення.
+                  </span>
+                </span>
               </label>
-
-              {/* Actions */}
-              <div className="flex flex-col-reverse gap-3 border-t border-zinc-800 pt-6 sm:flex-row sm:justify-end">
-                <button
-                  type="button"
-                  onClick={closeForm}
-                  disabled={saving}
-                  className="h-11 rounded-xl border border-zinc-700 px-5 font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white disabled:opacity-50"
-                >
-                  Скасувати
-                </button>
-
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-amber-400 px-6 font-semibold text-zinc-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {saving ? (
-                    <>
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                      Збереження...
-                    </>
-                  ) : (
-                    <>
-                      <Save className="h-5 w-5" />
-                      {editingId
-                        ? "Зберегти зміни"
-                        : "Додати адресу"}
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          </section>
-        )}
-
-        {/* Empty */}
-        {addresses.length === 0 && !showForm && (
-          <section className="rounded-3xl border border-dashed border-zinc-800 bg-zinc-900/40 px-6 py-16 text-center">
-            <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-400/10">
-              <MapPin className="h-8 w-8 text-amber-400" />
             </div>
 
-            <h2 className="text-xl font-bold">
-              У вас ще немає збережених адрес
-            </h2>
+            {/* FORM ACTIONS */}
 
-            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
-              Додайте адресу доставки один раз, і під час
-              наступних замовлень вам не доведеться вводити її
-              повторно.
-            </p>
+            <div className="flex flex-col-reverse gap-3 border-t border-white/10 px-5 py-5 sm:flex-row sm:justify-end sm:px-7">
+              <button
+                type="button"
+                onClick={closeForm}
+                disabled={saving}
+                className="rounded-xl border border-white/10 px-5 py-3 text-sm font-semibold text-gray-300 transition hover:bg-white/5 hover:text-white disabled:opacity-50"
+              >
+                Скасувати
+              </button>
 
-            <button
-              type="button"
-              onClick={openCreateForm}
-              className="mt-7 inline-flex h-11 items-center gap-2 rounded-xl bg-amber-400 px-5 font-semibold text-zinc-950 transition hover:bg-amber-300"
-            >
-              <Plus className="h-5 w-5" />
-              Додати першу адресу
-            </button>
-          </section>
+              <button
+                type="submit"
+                disabled={saving}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-amber-400 px-6 py-3 text-sm font-bold text-black transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving ? (
+                  <>
+                    <Loader2
+                      size={17}
+                      className="animate-spin"
+                    />
+                    Збереження...
+                  </>
+                ) : (
+                  <>
+                    <Save size={17} />
+                    {editingId
+                      ? "Зберегти зміни"
+                      : "Додати адресу"}
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
         )}
 
-        {/* Address list */}
-        {addresses.length > 0 && (
-          <section>
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h2 className="font-semibold">
-                  Збережені адреси
+        {/* CONTENT */}
+
+        {!showForm && (
+          <>
+            {loading ? (
+              <div className="flex min-h-[300px] items-center justify-center rounded-3xl border border-white/10 bg-[#111722]">
+                <div className="flex items-center gap-3 text-gray-400">
+                  <Loader2
+                    size={22}
+                    className="animate-spin text-amber-400"
+                  />
+                  Завантаження адрес...
+                </div>
+              </div>
+            ) : addresses.length === 0 ? (
+              <div className="rounded-3xl border border-dashed border-white/10 bg-[#111722] px-6 py-16 text-center">
+                <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-400/10">
+                  <MapPin
+                    size={30}
+                    className="text-amber-400"
+                  />
+                </div>
+
+                <h2 className="text-xl font-bold">
+                  Адрес ще немає
                 </h2>
 
-                <p className="mt-1 text-sm text-zinc-500">
-                  {addresses.length === 1
-                    ? "1 адреса"
-                    : `${addresses.length} адреси`}
+                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-500">
+                  Додайте адресу доставки, щоб не
+                  вводити її щоразу під час оформлення
+                  замовлення.
                 </p>
-              </div>
-            </div>
 
-            <div className="grid gap-4 lg:grid-cols-2">
-              {addresses.map((address) => (
-                <article
-                  key={address.id}
-                  className={`relative overflow-hidden rounded-3xl border bg-zinc-900/70 transition ${
-                    address.isDefault
-                      ? "border-amber-400/40 shadow-lg shadow-amber-400/5"
-                      : "border-zinc-800 hover:border-zinc-700"
-                  }`}
+                <button
+                  type="button"
+                  onClick={openCreateForm}
+                  className="mt-6 inline-flex items-center gap-2 rounded-xl bg-amber-400 px-5 py-3 text-sm font-bold text-black transition hover:bg-amber-300"
                 >
-                  {address.isDefault && (
-                    <div className="absolute right-0 top-0 rounded-bl-2xl bg-amber-400 px-4 py-2 text-xs font-bold uppercase tracking-wider text-zinc-950">
-                      Основна
-                    </div>
-                  )}
+                  <Plus size={18} />
+                  Додати першу адресу
+                </button>
+              </div>
+            ) : (
+              <div className="grid gap-5 lg:grid-cols-2">
+                {addresses.map((address) => (
+                  <article
+                    key={address.id}
+                    className={`relative overflow-hidden rounded-3xl border bg-[#111722] transition ${
+                      address.isDefault
+                        ? "border-amber-400/30 shadow-lg shadow-amber-400/5"
+                        : "border-white/10 hover:border-white/20"
+                    }`}
+                  >
+                    {/* DEFAULT STRIP */}
 
-                  <div className="p-5 sm:p-6">
-                    <div className="mb-5 flex items-start gap-4">
-                      <div
-                        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
-                          address.isDefault
-                            ? "bg-amber-400/10 text-amber-400"
-                            : "bg-zinc-800 text-zinc-400"
-                        }`}
-                      >
-                        {address.isDefault ? (
-                          <Home className="h-5 w-5" />
-                        ) : (
-                          <MapPin className="h-5 w-5" />
-                        )}
-                      </div>
+                    {address.isDefault && (
+                      <div className="absolute inset-x-0 top-0 h-1 bg-amber-400" />
+                    )}
 
-                      <div className="min-w-0 pr-20">
-                        <h3 className="font-semibold">
-                          {address.firstName ||
-                          address.lastName
-                            ? `${address.firstName ?? ""} ${
-                                address.lastName ?? ""
-                              }`.trim()
-                            : "Отримувач"}
-                        </h3>
+                    <div className="p-5 sm:p-6">
+                      {/* CARD HEADER */}
 
-                        {address.phone && (
-                          <p className="mt-1 text-sm text-zinc-500">
-                            {address.phone}
-                          </p>
-                        )}
-                      </div>
-                    </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex min-w-0 items-center gap-4">
+                          <div
+                            className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${
+                              address.isDefault
+                                ? "bg-amber-400/10 text-amber-400"
+                                : "bg-white/5 text-gray-400"
+                            }`}
+                          >
+                            <Home size={21} />
+                          </div>
 
-                    <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4">
-                      <p className="text-sm leading-6 text-zinc-300">
-                        {formatAddress(address)}
-                      </p>
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h2 className="truncate font-bold text-white">
+                                {getAddressTitle(
+                                  address
+                                )}
+                              </h2>
 
-                      {address.novaPoshtaWarehouseRef && (
-                        <div className="mt-3 flex items-center gap-2 text-xs text-zinc-500">
-                          <Truck className="h-4 w-4 text-red-400" />
+                              {address.isDefault && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-400">
+                                  <Star
+                                    size={11}
+                                    fill="currentColor"
+                                  />
+                                  Основна
+                                </span>
+                              )}
+                            </div>
 
-                          <span>
-                            Нова пошта · відділення
-                          </span>
+                            <p className="mt-1 text-xs text-gray-500">
+                              {getTypeLabel(
+                                address.type
+                              )}
+                            </p>
+                          </div>
                         </div>
-                      )}
-                    </div>
 
-                    <div className="mt-5 flex flex-wrap gap-2">
-                      {!address.isDefault && (
                         <button
                           type="button"
                           onClick={() =>
-                            makeDefault(address.id)
+                            openEditForm(address)
                           }
-                          disabled={defaultId === address.id}
-                          className="inline-flex h-10 items-center gap-2 rounded-xl border border-zinc-700 px-3.5 text-sm font-medium text-zinc-300 transition hover:border-amber-400/40 hover:bg-amber-400/5 hover:text-amber-300 disabled:opacity-50"
+                          className="shrink-0 rounded-xl p-2.5 text-gray-500 transition hover:bg-white/5 hover:text-white"
+                          title="Редагувати"
                         >
-                          {defaultId === address.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Check className="h-4 w-4" />
-                          )}
-
-                          Зробити основною
+                          <Edit3 size={18} />
                         </button>
-                      )}
+                      </div>
 
-                      <button
-                        type="button"
-                        onClick={() =>
-                          openEditForm(address)
-                        }
-                        className="inline-flex h-10 items-center gap-2 rounded-xl border border-zinc-700 px-3.5 text-sm font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
-                      >
-                        <Edit3 className="h-4 w-4" />
-                        Редагувати
-                      </button>
+                      {/* ADDRESS */}
 
-                      <button
-                        type="button"
-                        onClick={() =>
-                          deleteAddress(address)
-                        }
-                        disabled={deletingId === address.id}
-                        className="inline-flex h-10 items-center gap-2 rounded-xl border border-red-500/20 px-3.5 text-sm font-medium text-red-400 transition hover:bg-red-500/10 hover:text-red-300 disabled:opacity-50"
-                      >
-                        {deletingId === address.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="h-4 w-4" />
+                      <div className="mt-6 space-y-3 rounded-2xl border border-white/5 bg-[#0b0f17] p-4">
+                        <div className="flex items-start gap-3">
+                          <MapPin
+                            size={17}
+                            className="mt-0.5 shrink-0 text-amber-400"
+                          />
+
+                          <p className="text-sm leading-6 text-gray-300">
+                            {formatAddress(address)}
+                          </p>
+                        </div>
+
+                        {(address.firstName ||
+                          address.lastName) && (
+                          <div className="flex items-center gap-3 text-sm text-gray-400">
+                            <User
+                              size={16}
+                              className="shrink-0 text-gray-500"
+                            />
+
+                            <span>
+                              {[
+                                address.firstName,
+                                address.lastName,
+                              ]
+                                .filter(Boolean)
+                                .join(" ")}
+                            </span>
+                          </div>
                         )}
 
-                        Видалити
-                      </button>
+                        {address.phone && (
+                          <div className="flex items-center gap-3 text-sm text-gray-400">
+                            <Phone
+                              size={16}
+                              className="shrink-0 text-gray-500"
+                            />
+
+                            <span>
+                              {address.phone}
+                            </span>
+                          </div>
+                        )}
+
+                        {address.novaPoshtaWarehouse && (
+                          <div className="flex items-start gap-3 text-sm text-gray-400">
+                            <Warehouse
+                              size={16}
+                              className="mt-0.5 shrink-0 text-gray-500"
+                            />
+
+                            <span>
+                              {
+                                address.novaPoshtaWarehouse
+                              }
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ACTIONS */}
+
+                      <div className="mt-5 flex flex-wrap gap-2">
+                        {!address.isDefault && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              makeDefault(
+                                address.id
+                              )
+                            }
+                            disabled={
+                              defaultId ===
+                              address.id
+                            }
+                            className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3.5 py-2.5 text-xs font-semibold text-gray-300 transition hover:border-amber-400/30 hover:bg-amber-400/5 hover:text-amber-400 disabled:opacity-50"
+                          >
+                            {defaultId ===
+                            address.id ? (
+                              <Loader2
+                                size={14}
+                                className="animate-spin"
+                              />
+                            ) : (
+                              <Star size={14} />
+                            )}
+
+                            Зробити основною
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openEditForm(address)
+                          }
+                          className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3.5 py-2.5 text-xs font-semibold text-gray-300 transition hover:bg-white/5 hover:text-white"
+                        >
+                          <Edit3 size={14} />
+                          Редагувати
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            deleteAddress(address)
+                          }
+                          disabled={
+                            deletingId ===
+                            address.id
+                          }
+                          className="inline-flex items-center gap-2 rounded-xl border border-red-500/10 px-3.5 py-2.5 text-xs font-semibold text-red-400 transition hover:border-red-500/20 hover:bg-red-500/5 disabled:opacity-50"
+                        >
+                          {deletingId ===
+                          address.id ? (
+                            <Loader2
+                              size={14}
+                              className="animate-spin"
+                            />
+                          ) : (
+                            <Trash2 size={14} />
+                          )}
+
+                          Видалити
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
+                  </article>
+                ))}
+              </div>
+            )}
+          </>
         )}
-
-        {/* Bottom navigation */}
-        <div className="mt-8 border-t border-zinc-900 pt-6">
-          <Link
-            href="/account"
-            className="inline-flex items-center gap-2 text-sm font-medium text-zinc-500 transition hover:text-white"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Повернутися до акаунта
-          </Link>
-        </div>
-      </div>
-    </main>
-  );
-}
-
-// =====================================================
-// FIELD
-// =====================================================
-
-type FieldProps = {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-  type?: string;
-  required?: boolean;
-  select?: boolean;
-  options?: {
-    value: string;
-    label: string;
-  }[];
-};
-
-function Field({
-  label,
-  value,
-  onChange,
-  placeholder,
-  type = "text",
-  required = false,
-  select = false,
-  options = [],
-}: FieldProps) {
-  const baseClass =
-    "mt-2 h-11 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3.5 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/10";
-
-  return (
-    <label className="block">
-      <span className="text-sm font-medium text-zinc-300">
-        {label}
-
-        {required && (
-          <span className="ml-1 text-amber-400">*</span>
-        )}
-      </span>
-
-      {select ? (
-        <select
-          value={value}
-          onChange={(event) =>
-            onChange(event.target.value)
-          }
-          className={baseClass}
-        >
-          {options.map((option) => (
-            <option
-              key={option.value}
-              value={option.value}
-            >
-              {option.label}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <input
-          type={type}
-          value={value}
-          onChange={(event) =>
-            onChange(event.target.value)
-          }
-          placeholder={placeholder}
-          required={required}
-          className={baseClass}
-        />
-      )}
-    </label>
+      </main>
+    </div>
   );
 }

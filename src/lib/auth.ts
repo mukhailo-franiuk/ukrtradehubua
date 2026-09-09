@@ -1,4 +1,4 @@
-
+import crypto from "node:crypto";
 import { cookies } from "next/headers";
 
 import { db } from "@/lib/prisma";
@@ -96,11 +96,84 @@ export async function getAdmin() {
 }
 
 /* ============================================================
+   GET CLIENT IP
+============================================================ */
+
+function getClientIp(request?: Request) {
+  if (!request) {
+    return null;
+  }
+
+  /*
+   * Vercel / reverse proxy:
+   * x-forwarded-for:
+   * client, proxy1, proxy2
+   */
+
+  const forwardedFor =
+    request.headers.get("x-forwarded-for");
+
+  if (forwardedFor) {
+    const firstIp = forwardedFor
+      .split(",")[0]
+      ?.trim();
+
+    if (firstIp) {
+      return firstIp.slice(0, 100);
+    }
+  }
+
+  /*
+   * Alternative proxy header
+   */
+
+  const realIp =
+    request.headers.get("x-real-ip");
+
+  if (realIp) {
+    return realIp.trim().slice(0, 100);
+  }
+
+  /*
+   * Cloudflare
+   */
+
+  const connectingIp =
+    request.headers.get("cf-connecting-ip");
+
+  if (connectingIp) {
+    return connectingIp.trim().slice(0, 100);
+  }
+
+  return null;
+}
+
+/* ============================================================
+   GET USER AGENT
+============================================================ */
+
+function getUserAgent(request?: Request) {
+  if (!request) {
+    return null;
+  }
+
+  const userAgent =
+    request.headers.get("user-agent");
+
+  if (!userAgent) {
+    return null;
+  }
+
+  return userAgent.slice(0, 1000);
+}
+
+/* ============================================================
    CREATE SESSION
 ============================================================ */
 
 export async function createSession(
-  userId: string
+  userId: string,
+  request?: Request
 ) {
   const token = crypto.randomUUID();
 
@@ -108,13 +181,27 @@ export async function createSession(
     Date.now() + SESSION_DURATION
   );
 
+  const ipAddress = getClientIp(request);
+
+  const userAgent = getUserAgent(request);
+
+  /* ==========================================================
+     DATABASE
+  ========================================================== */
+
   await db.session.create({
     data: {
       token,
       userId,
       expiresAt,
+      ipAddress,
+      userAgent,
     },
   });
+
+  /* ==========================================================
+     COOKIE
+  ========================================================== */
 
   const cookieStore = await cookies();
 
@@ -151,5 +238,7 @@ export async function deleteCurrentSession() {
 
   const cookieStore = await cookies();
 
-  cookieStore.delete(SESSION_COOKIE_NAME);
+  cookieStore.delete(
+    SESSION_COOKIE_NAME
+  );
 }
