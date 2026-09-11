@@ -1,4 +1,3 @@
-
 "use client";
 
 import {
@@ -30,11 +29,21 @@ import {
    TYPES
 ============================================================ */
 
+type AvatarData = {
+  id: string;
+  url: string;
+  alt: string | null;
+  width: number | null;
+  height: number | null;
+  createdAt: string;
+};
+
 type CurrentUser = {
   id: string;
   name: string | null;
   email: string;
   role: "CUSTOMER" | "SELLER" | "ADMIN";
+  avatar: AvatarData | null;
 };
 
 type CategoryChild = {
@@ -50,6 +59,33 @@ type Category = {
   slug: string;
   icon: string | null;
   children: CategoryChild[];
+};
+
+type AuthResponse = {
+  authenticated?: boolean;
+  user?: CurrentUser | null;
+  message?: string;
+  error?: string;
+};
+
+type CartItem = {
+  quantity?: number;
+};
+
+type CartResponse = {
+  success?: boolean;
+  cart?: {
+    id?: string;
+    userId?: string;
+    items?: CartItem[];
+    itemsCount?: number;
+    subtotal?: number | string;
+    oldSubtotal?: number | string;
+    discount?: number | string;
+    total?: number | string;
+  };
+  error?: string;
+  message?: string;
 };
 
 /* ============================================================
@@ -111,6 +147,9 @@ export default function HeaderClient({
   const [query, setQuery] =
     useState("");
 
+  const [cartCount, setCartCount] =
+    useState(0);
+
   const [activeCategory, setActiveCategory] =
     useState<Category | null>(
       categories[0] ?? null
@@ -145,7 +184,7 @@ export default function HeaderClient({
           return;
         }
 
-        const data =
+        const data: AuthResponse =
           await response.json();
 
         if (mounted) {
@@ -170,6 +209,253 @@ export default function HeaderClient({
       mounted = false;
     };
   }, []);
+
+  /* ==========================================================
+     CART COUNT
+  ========================================================== */
+
+  useEffect(() => {
+    let mounted = true;
+
+    function getGuestCartCount() {
+      try {
+        const raw =
+          window.localStorage.getItem(
+            "ukrtradehub_guest_cart"
+          );
+
+        if (!raw) {
+          return 0;
+        }
+
+        const parsed =
+          JSON.parse(raw);
+
+        if (!Array.isArray(parsed)) {
+          return 0;
+        }
+
+        return parsed.reduce(
+          (
+            sum: number,
+            item: {
+              quantity?: unknown;
+            }
+          ) => {
+            const quantity =
+              Number(item?.quantity);
+
+            if (
+              !Number.isFinite(quantity) ||
+              quantity <= 0
+            ) {
+              return sum;
+            }
+
+            return (
+              sum +
+              Math.floor(quantity)
+            );
+          },
+          0
+        );
+      } catch {
+        return 0;
+      }
+    }
+
+    async function loadCartCount() {
+      try {
+        /*
+         * ------------------------------------------------------
+         * AUTHENTICATED USER
+         * ------------------------------------------------------
+         *
+         * Якщо user вже завантажений — читаємо реальний
+         * серверний кошик через /api/cart.
+         *
+         * /api/cart повертає:
+         *
+         * cart.itemsCount
+         *
+         * де itemsCount = сума quantity.
+         */
+
+        if (user) {
+          const response =
+            await fetch(
+              "/api/cart",
+              {
+                method: "GET",
+                credentials: "include",
+                cache: "no-store",
+              }
+            );
+
+          if (!response.ok) {
+            if (mounted) {
+              setCartCount(0);
+            }
+
+            return;
+          }
+
+          const data: CartResponse =
+            await response.json();
+
+          const itemsCount =
+            data?.cart?.itemsCount;
+
+          if (
+            typeof itemsCount ===
+            "number"
+          ) {
+            if (mounted) {
+              setCartCount(
+                Math.max(
+                  0,
+                  Math.floor(
+                    itemsCount
+                  )
+                )
+              );
+            }
+
+            return;
+          }
+
+          /*
+           * Запасний варіант:
+           * рахуємо quantity з items.
+           */
+
+          const items =
+            data?.cart?.items;
+
+          if (Array.isArray(items)) {
+            const count =
+              items.reduce(
+                (
+                  sum: number,
+                  item: CartItem
+                ) =>
+                  sum +
+                  Math.max(
+                    0,
+                    Math.floor(
+                      Number(
+                        item?.quantity
+                      ) || 0
+                    )
+                  ),
+                0
+              );
+
+            if (mounted) {
+              setCartCount(count);
+            }
+
+            return;
+          }
+
+          if (mounted) {
+            setCartCount(0);
+          }
+
+          return;
+        }
+
+        /*
+         * ------------------------------------------------------
+         * GUEST
+         * ------------------------------------------------------
+         */
+
+        if (!loadingUser) {
+          const count =
+            getGuestCartCount();
+
+          if (mounted) {
+            setCartCount(count);
+          }
+        }
+      } catch {
+        if (mounted) {
+          setCartCount(0);
+        }
+      }
+    }
+
+    /*
+     * Не робимо запит /api/cart поки ще невідомо,
+     * чи користувач авторизований.
+     */
+
+    if (!loadingUser) {
+      loadCartCount();
+    }
+
+    /* ========================================================
+       CART EVENTS
+    ======================================================== */
+
+    const handleCartUpdate =
+      () => {
+        loadCartCount();
+      };
+
+    window.addEventListener(
+      "ukrtradehub:cart-updated",
+      handleCartUpdate
+    );
+
+    window.addEventListener(
+      "ukrtradehub:guest-cart-updated",
+      handleCartUpdate
+    );
+
+    window.addEventListener(
+      "storage",
+      handleCartUpdate
+    );
+
+    /*
+     * Додатково перевіряємо кошик,
+     * коли користувач повертається на вкладку.
+     */
+
+    window.addEventListener(
+      "focus",
+      handleCartUpdate
+    );
+
+    return () => {
+      mounted = false;
+
+      window.removeEventListener(
+        "ukrtradehub:cart-updated",
+        handleCartUpdate
+      );
+
+      window.removeEventListener(
+        "ukrtradehub:guest-cart-updated",
+        handleCartUpdate
+      );
+
+      window.removeEventListener(
+        "storage",
+        handleCartUpdate
+      );
+
+      window.removeEventListener(
+        "focus",
+        handleCartUpdate
+      );
+    };
+  }, [
+    user,
+    loadingUser,
+  ]);
 
   /* ==========================================================
      ACTIVE CATEGORY
@@ -338,6 +624,7 @@ export default function HeaderClient({
       // Стан очищаємо навіть якщо запит завершився помилкою.
     } finally {
       setUser(null);
+      setCartCount(0);
       setAccountOpen(false);
       setCatalogOpen(false);
       setMobileOpen(false);
@@ -383,6 +670,19 @@ export default function HeaderClient({
   const showCustomerFeatures =
     isAuthenticated &&
     !isAdmin;
+
+  /* ==========================================================
+     USER INITIAL
+  ========================================================== */
+
+  const userInitial =
+    (
+      user?.name ||
+      user?.email ||
+      "U"
+    )
+      .charAt(0)
+      .toUpperCase();
 
   /* ==========================================================
      RENDER
@@ -449,7 +749,6 @@ export default function HeaderClient({
                 className="flex items-center gap-1 transition hover:text-white"
               >
                 🇺🇦 Українська
-
                 <ChevronDown className="h-3 w-3" />
               </button>
 
@@ -458,11 +757,11 @@ export default function HeaderClient({
                 className="flex items-center gap-1 transition hover:text-white"
               >
                 UAH
-
                 <ChevronDown className="h-3 w-3" />
               </button>
 
             </div>
+
           </div>
         </div>
 
@@ -529,6 +828,7 @@ export default function HeaderClient({
                   </div>
 
                 </div>
+
               </div>
             </Link>
 
@@ -612,42 +912,22 @@ export default function HeaderClient({
 
               {/* =================================================
                   CUSTOMER ACTIONS
-
-                  ГІСТЬ:
-                  🛒 Кошик
-
-                  CUSTOMER / SELLER:
-                  ❤️ Обране
-                  🔔 Сповіщення
-                  🛒 Кошик
-
-                  ADMIN:
-                  🛒 Кошик
-
-                  КОШИК ЗАВЖДИ ДОСТУПНИЙ.
               ================================================= */}
 
               <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
 
-                {/* =================================================
-                    FAVORITES
-                    Тільки авторизованому CUSTOMER / SELLER
-                ================================================= */}
+                {/* FAVORITES */}
 
                 {showCustomerFeatures && (
                   <HeaderAction
                     href="/account/favorites"
                     label="Обране"
-                    badge="0"
                   >
                     <Heart className="h-[19px] w-[19px]" />
                   </HeaderAction>
                 )}
 
-                {/* =================================================
-                    NOTIFICATIONS
-                    Тільки авторизованому CUSTOMER / SELLER
-                ================================================= */}
+                {/* NOTIFICATIONS */}
 
                 {showCustomerFeatures && (
                   <HeaderAction
@@ -659,17 +939,14 @@ export default function HeaderClient({
                   </HeaderAction>
                 )}
 
-                {/* =================================================
-                    CART
-
-                    НІКОЛИ НЕ ЗАЛЕЖИТЬ ВІД USER.
-                    Працює для гостя.
-                ================================================= */}
+                {/* CART */}
 
                 <HeaderAction
                   href="/cart"
                   label="Кошик"
-                  badge="0"
+                  badge={String(
+                    cartCount
+                  )}
                 >
                   <ShoppingCart className="h-[19px] w-[19px]" />
                 </HeaderAction>
@@ -691,17 +968,11 @@ export default function HeaderClient({
                 className="relative shrink-0"
               >
 
-                {/* =================================================
-                    LOADING
-                ================================================= */}
-
                 {loadingUser ? (
-                  <div className="h-11 w-11 animate-pulse rounded-xl bg-white/[0.05] sm:w-12" />
-                ) : user ? (
 
-                  /* =================================================
-                     AUTHENTICATED
-                  ================================================= */
+                  <div className="h-11 w-11 animate-pulse rounded-xl bg-white/[0.05] sm:w-12" />
+
+                ) : user ? (
 
                   <>
                     <button
@@ -720,13 +991,26 @@ export default function HeaderClient({
                       className="flex h-11 shrink-0 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-1.5 transition hover:border-white/20 hover:bg-white/[0.08] sm:px-2 2xl:px-2.5"
                     >
 
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-400 text-xs font-black text-black">
-                        {(
-                          user.name ||
-                          user.email
-                        )
-                          .charAt(0)
-                          .toUpperCase()}
+                      {/* USER AVATAR */}
+
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-amber-400 text-xs font-black text-black">
+
+                        {user.avatar?.url ? (
+                          <img
+                            src={
+                              user.avatar.url
+                            }
+                            alt={
+                              user.avatar.alt ||
+                              user.name ||
+                              "Фото профілю"
+                            }
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          userInitial
+                        )}
+
                       </div>
 
                       <div className="hidden min-w-0 2xl:block 2xl:max-w-[120px]">
@@ -791,13 +1075,24 @@ export default function HeaderClient({
 
                             <div className="flex items-center gap-3">
 
-                              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-400 font-black text-black">
-                                {(
-                                  user.name ||
-                                  user.email
-                                )
-                                  .charAt(0)
-                                  .toUpperCase()}
+                              <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-amber-400 font-black text-black">
+
+                                {user.avatar?.url ? (
+                                  <img
+                                    src={
+                                      user.avatar.url
+                                    }
+                                    alt={
+                                      user.avatar.alt ||
+                                      user.name ||
+                                      "Фото профілю"
+                                    }
+                                    className="h-full w-full object-cover"
+                                  />
+                                ) : (
+                                  userInitial
+                                )}
+
                               </div>
 
                               <div className="min-w-0 flex-1">
@@ -814,6 +1109,7 @@ export default function HeaderClient({
                               </div>
 
                             </div>
+
                           </div>
 
                           {/* ACCOUNT MENU */}
@@ -833,11 +1129,7 @@ export default function HeaderClient({
                               }
                             />
 
-                            {/* =================================================
-                                CUSTOMER / SELLER ACCOUNT FEATURES
-
-                                ADMIN НЕ БАЧИТЬ ПОКУПЕЦЬКИХ ПУНКТІВ.
-                            ================================================= */}
+                            {/* CUSTOMER / SELLER */}
 
                             {!isAdmin && (
                               <>
@@ -895,9 +1187,7 @@ export default function HeaderClient({
                               </>
                             )}
 
-                            {/* =================================================
-                                SELLER
-                            ================================================= */}
+                            {/* SELLER */}
 
                             {isSeller && (
                               <AccountLink
@@ -914,9 +1204,7 @@ export default function HeaderClient({
                               />
                             )}
 
-                            {/* =================================================
-                                ADMIN
-                            ================================================= */}
+                            {/* ADMIN */}
 
                             {isAdmin && (
                               <AccountLink
@@ -947,6 +1235,7 @@ export default function HeaderClient({
                             </button>
 
                           </div>
+
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -954,9 +1243,7 @@ export default function HeaderClient({
 
                 ) : (
 
-                  /* =================================================
-                     GUEST
-                  ================================================= */
+                  /* GUEST */
 
                   <Link
                     href="/login"
@@ -969,10 +1256,13 @@ export default function HeaderClient({
                       Увійти
                     </span>
                   </Link>
+
                 )}
 
               </div>
+
             </div>
+
           </div>
 
           {/* ====================================================
@@ -1030,6 +1320,7 @@ export default function HeaderClient({
               </motion.div>
             )}
           </AnimatePresence>
+
         </div>
 
         {/* ====================================================
@@ -1075,15 +1366,14 @@ export default function HeaderClient({
             </nav>
 
             <div className="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-zinc-600">
-
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-
               Український маркетплейс
-
             </div>
 
           </div>
+
         </div>
+
       </header>
 
       {/* ======================================================
@@ -1093,6 +1383,7 @@ export default function HeaderClient({
       <AnimatePresence>
         {catalogOpen && (
           <>
+
             {/* OVERLAY */}
 
             <motion.div
@@ -1131,16 +1422,21 @@ export default function HeaderClient({
               }}
               className="fixed left-0 right-0 top-[156px] z-[90] hidden border-b border-white/10 bg-[#090d14] shadow-2xl shadow-black/50 lg:block"
             >
+
               <div className="mx-auto grid max-h-[calc(100vh-156px)] max-w-[1600px] grid-cols-[300px_1fr] overflow-y-auto px-6 py-7">
 
                 {/* =================================================
-                    LEFT
+                    MAIN CATEGORIES
                 ================================================= */}
 
                 <div className="border-r border-white/10 pr-5">
 
-                  <div className="mb-4 px-3 text-[10px] font-black uppercase tracking-[0.18em] text-zinc-600">
-                    Каталог
+                  <div className="mb-4 px-3">
+
+                    <div className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-600">
+                      Каталог
+                    </div>
+
                   </div>
 
                   {categories.length === 0 ? (
@@ -1208,11 +1504,13 @@ export default function HeaderClient({
                       )}
 
                     </div>
+
                   )}
+
                 </div>
 
                 {/* =================================================
-                    RIGHT
+                    ACTIVE CATEGORY
                 ================================================= */}
 
                 {activeCategory && (
@@ -1242,7 +1540,9 @@ export default function HeaderClient({
                             </p>
 
                           </div>
+
                         </div>
+
                       </div>
 
                       <Link
@@ -1261,13 +1561,13 @@ export default function HeaderClient({
 
                     </div>
 
-                    {activeCategory.children.length > 0 ? (
+                    {activeCategory.children.length >
+                    0 ? (
 
                       <div className="mt-7 grid grid-cols-3 gap-3">
 
                         {activeCategory.children.map(
                           (child) => (
-
                             <Link
                               key={
                                 child.id
@@ -1324,11 +1624,8 @@ export default function HeaderClient({
                         <div>
 
                           <div className="flex items-center gap-2 text-sm font-black text-amber-300">
-
                             <Zap className="h-4 w-4" />
-
                             Гарячі пропозиції
-
                           </div>
 
                           <p className="mt-1 text-xs text-zinc-600">
@@ -1350,13 +1647,16 @@ export default function HeaderClient({
                         </Link>
 
                       </div>
+
                     </div>
 
                   </div>
                 )}
 
               </div>
+
             </motion.div>
+
           </>
         )}
       </AnimatePresence>
@@ -1368,6 +1668,7 @@ export default function HeaderClient({
       <AnimatePresence>
         {mobileOpen && (
           <>
+
             {/* OVERLAY */}
 
             <motion.div
@@ -1415,7 +1716,9 @@ export default function HeaderClient({
                 <Link
                   href="/"
                   onClick={() =>
-                    setMobileOpen(false)
+                    setMobileOpen(
+                      false
+                    )
                   }
                   className="text-lg font-black"
                 >
@@ -1430,7 +1733,9 @@ export default function HeaderClient({
                   type="button"
                   aria-label="Закрити меню"
                   onClick={() =>
-                    setMobileOpen(false)
+                    setMobileOpen(
+                      false
+                    )
                   }
                   className="flex h-10 w-10 items-center justify-center rounded-xl text-zinc-400 transition hover:bg-white/[0.06] hover:text-white"
                 >
@@ -1453,13 +1758,26 @@ export default function HeaderClient({
 
                   <div className="flex items-center gap-3 rounded-xl bg-white/[0.04] p-3">
 
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-400 font-black text-black">
-                      {(
-                        user.name ||
-                        user.email
-                      )
-                        .charAt(0)
-                        .toUpperCase()}
+                    {/* MOBILE AVATAR */}
+
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-amber-400 font-black text-black">
+
+                      {user.avatar?.url ? (
+                        <img
+                          src={
+                            user.avatar.url
+                          }
+                          alt={
+                            user.avatar.alt ||
+                            user.name ||
+                            "Фото профілю"
+                          }
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        userInitial
+                      )}
+
                     </div>
 
                     <div className="min-w-0">
@@ -1490,6 +1808,7 @@ export default function HeaderClient({
                   >
                     Увійти в акаунт
                   </Link>
+
                 )}
 
               </div>
@@ -1510,7 +1829,9 @@ export default function HeaderClient({
                     href="/"
                     label="Головна"
                     onClick={() =>
-                      setMobileOpen(false)
+                      setMobileOpen(
+                        false
+                      )
                     }
                   />
 
@@ -1518,7 +1839,9 @@ export default function HeaderClient({
                     href="/products"
                     label="Усі товари"
                     onClick={() =>
-                      setMobileOpen(false)
+                      setMobileOpen(
+                        false
+                      )
                     }
                   />
 
@@ -1527,7 +1850,9 @@ export default function HeaderClient({
                     label="Акції та знижки"
                     accent
                     onClick={() =>
-                      setMobileOpen(false)
+                      setMobileOpen(
+                        false
+                      )
                     }
                   />
 
@@ -1535,15 +1860,13 @@ export default function HeaderClient({
                     href="/shops"
                     label="Магазини"
                     onClick={() =>
-                      setMobileOpen(false)
+                      setMobileOpen(
+                        false
+                      )
                     }
                   />
 
-                  {/* =================================================
-                      CUSTOMER FEATURES
-
-                      Тільки авторизованому CUSTOMER / SELLER
-                  ================================================= */}
+                  {/* CUSTOMER FEATURES */}
 
                   {showCustomerFeatures && (
                     <>
@@ -1551,7 +1874,9 @@ export default function HeaderClient({
                         href="/account/favorites"
                         label="Обране"
                         onClick={() =>
-                          setMobileOpen(false)
+                          setMobileOpen(
+                            false
+                          )
                         }
                       />
 
@@ -1559,7 +1884,9 @@ export default function HeaderClient({
                         href="/account/notifications"
                         label="Сповіщення"
                         onClick={() =>
-                          setMobileOpen(false)
+                          setMobileOpen(
+                            false
+                          )
                         }
                       />
 
@@ -1567,29 +1894,31 @@ export default function HeaderClient({
                         href="/account/orders"
                         label="Мої замовлення"
                         onClick={() =>
-                          setMobileOpen(false)
+                          setMobileOpen(
+                            false
+                          )
                         }
                       />
                     </>
                   )}
 
-                  {/* =================================================
-                      CART
-
-                      ЗАВЖДИ доступний.
-                  ================================================= */}
+                  {/* CART */}
 
                   <MobileLink
                     href="/cart"
-                    label="Кошик"
+                    label={`Кошик${
+                      cartCount > 0
+                        ? ` (${cartCount})`
+                        : ""
+                    }`}
                     onClick={() =>
-                      setMobileOpen(false)
+                      setMobileOpen(
+                        false
+                      )
                     }
                   />
 
-                  {/* =================================================
-                      SELLER
-                  ================================================= */}
+                  {/* SELLER */}
 
                   {isSeller && (
                     <MobileLink
@@ -1597,14 +1926,14 @@ export default function HeaderClient({
                       label="Кабінет продавця"
                       accent
                       onClick={() =>
-                        setMobileOpen(false)
+                        setMobileOpen(
+                          false
+                        )
                       }
                     />
                   )}
 
-                  {/* =================================================
-                      ADMIN
-                  ================================================= */}
+                  {/* ADMIN */}
 
                   {isAdmin && (
                     <MobileLink
@@ -1612,7 +1941,9 @@ export default function HeaderClient({
                       label="Адмін-панель"
                       accent
                       onClick={() =>
-                        setMobileOpen(false)
+                        setMobileOpen(
+                          false
+                        )
                       }
                     />
                   )}
@@ -1635,7 +1966,6 @@ export default function HeaderClient({
 
                     categories.map(
                       (category) => (
-
                         <Link
                           key={
                             category.id
@@ -1671,6 +2001,7 @@ export default function HeaderClient({
                     <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 text-sm text-zinc-600">
                       Категорії поки що відсутні.
                     </div>
+
                   )}
 
                 </div>
@@ -1687,7 +2018,9 @@ export default function HeaderClient({
                     href="/help"
                     label="Допомога"
                     onClick={() =>
-                      setMobileOpen(false)
+                      setMobileOpen(
+                        false
+                      )
                     }
                   />
 
@@ -1695,7 +2028,9 @@ export default function HeaderClient({
                     href="/delivery"
                     label="Доставка та оплата"
                     onClick={() =>
-                      setMobileOpen(false)
+                      setMobileOpen(
+                        false
+                      )
                     }
                   />
 
@@ -1703,7 +2038,9 @@ export default function HeaderClient({
                     href="/buyer-protection"
                     label="Захист покупця"
                     onClick={() =>
-                      setMobileOpen(false)
+                      setMobileOpen(
+                        false
+                      )
                     }
                   />
 
@@ -1711,7 +2048,9 @@ export default function HeaderClient({
                     href="/seller/register"
                     label="Стати продавцем"
                     onClick={() =>
-                      setMobileOpen(false)
+                      setMobileOpen(
+                        false
+                      )
                     }
                   />
 
@@ -1732,7 +2071,9 @@ export default function HeaderClient({
                 )}
 
               </nav>
+
             </motion.aside>
+
           </>
         )}
       </AnimatePresence>
